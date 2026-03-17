@@ -1,0 +1,130 @@
+---
+title: 'Mod 1.2: Technical Report'
+author: "Group 8"
+date: "`r lubridate::today()`"
+format: 
+  html: 
+    embed-resources: true
+    toc: true 
+    toc_depth: 4
+editor_options: 
+  chunk_output_type: console
+---
+# Libraries
+```{r}
+#libraries
+library(tidyverse)
+library(tidymodels)
+source("https://github.com/jjcurtin/lab_support/blob/main/fun_plots.R?raw=true")
+source("https://github.com/jjcurtin/lab_support/blob/main/fun_ml.R?raw=true")
+source("https://github.com/jjcurtin/lab_support/blob/main/fun_eda.R?raw=true")
+library(ggplot2)
+library(skimr)
+
+```
+
+# 1. Cleaning
+
+## Phenolics Data:
+
+#### Notes:
+Concentration values should be multiplied by 10 to reflect the undiluted juice.
+If `sample_id` = `std` + a number between 0 and 750, this is standard concentration. `tube_number` are actual concentration in the standard
+
+`sample_id` starts with `st` refers to stevens, `mq` refers to malloca queen, 
+
+```{r}
+#Phenolics_raw data
+d_pheno <- readxl::read_xlsx(
+  here::here("cranberry-data/cranberry-data/data_mixed/", "Phenolics_RawData.xlsx")) |> 
+  janitor::clean_names() |> 
+  glimpse()
+
+#all values will now be lowercase in the sample_id column
+d_pheno <- d_pheno |> 
+  mutate(across(where(is.character),tolower))
+
+skim(d_pheno)
+
+# #make a column for standard, location, experiment type- not done with this yet
+# d_pheno <- d_pheno |> 
+#   mutate(standard = if_else(str_detect(sample_id,"^std\\d+"), 1,0),
+#          cultiver = if_else(str_starts(sample_id, "mq"), "mq",
+#                             if_else(str_starts(sample_id, "std"),"0", "st")),
+#          exper_type = if_else(str_detect(sample_id, "a"), "a", "0"),
+#          exper_type = if_else(str_detect(sample_id, "lt"), "long_term", exper_type),
+#          exper_type = if_else(str_detect(sample_id, "a0"), "a0", exper_type),
+#          exper_type = if_else(str_detect(sample_id, "b") , "b", exper_type),
+#          exper_type = if_else(str_detect(sample_id, "d"), "d", exper_type),
+#          exper_type = if_else(substr(sample_id, 3, 3)== "c", "c", exper_type)
+#          
+#          )
+
+
+d_pheno <- d_pheno |> 
+  mutate(exper_type = if_else(str_detect(sample_id, "^std(0|50|100|150|250|500|750)$"), "standard", "acute"), 
+         exper_type = if_else(str_detect(sample_id, "lt"), "long_term", exper_type)
+         #Create a experiment type variable of either long term, standard, or acute based on sample id
+         )
+
+#create a row for plot number of long term experiment
+d_pheno <- d_pheno |> 
+  mutate(plot_num_lt = if_else(str_detect(sample_id, "lt"), str_extract(sample_id, "\\d+$"), NA),
+         bio_replicate = if_else(exper_type == "acute", str_extract(sample_id, "\\d+$"), NA),
+          #edit later for ignoring a0
+         heat_condition = if_else(exper_type == "acute",str_sub(sample_id, 3, 3), NA),
+         control_patch = if_else(exper_type == "acute" &str_sub(sample_id, 4, 4) == "c", 1, 0),
+         cultiver = if_else(exper_type != "standard", str_sub(sample_id, 1,2), NA)
+  )
+
+# NO MISSING DATA
+
+```
+
+## Heat Stress Data: 
+
+```{r}
+#heat stress dates
+d_date_heat <- readxl::read_xlsx(here::here("cranberry-data/cranberry-data/data_mixed/", "Listofdates_HeatStressTreatments2024.xlsx" )) |> 
+  janitor::clean_names() |> 
+  glimpse()
+
+skim(d_date_heat)
+
+d_date_heat |> filter(is.na(test))
+d_date_heat |> filter(is.na(experiment_date))
+d_date_heat |> filter(is.na(test)) |> filter(!is.na(experiment_date))
+
+
+d_date_heat |> select(where(is.character), -file_name) |> 
+  names() |> 
+  walk(\(var) print(unique(d_date_heat[[var]])))
+
+```
+
+```{r}
+d_acute_raw <- readxl::read_excel(here::here("cranberry-data/cranberry-data/data_acute/","Acute HS-Yield_RawData 2024.xlsx"), sheet = "Acute Heat stress", range = "A5:O65" ) |> 
+  janitor::clean_names() |> 
+  glimpse()
+
+skim(d_acute_raw)
+
+#missing data: 
+d_acute_raw |> filter(is.na(observations))
+
+```
+
+
+
+```{r}
+#LT hs yield data
+d_lt_heat_stress <- readxl::read_excel(here::here("cranberry-data/cranberry-data/data_acute/","Acute HS-Yield_RawData 2024.xlsx"), sheet = "St & MQ LT_20240924", range = "A5:N21" ) |> 
+  janitor::clean_names() |> select(-x10) |> 
+  glimpse()
+
+skim(d_lt_heat_stress)
+
+#NO MISSING DATA HERE
+
+
+```
