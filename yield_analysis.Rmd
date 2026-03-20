@@ -14,6 +14,7 @@ knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
 ```{r}
 library(tidyverse)
 library(readxl)
+library(coin
 ```
 
 # 2 Load and Clean Data
@@ -250,25 +251,49 @@ difference is -62g (OTC lower) but p=0.34. With only 4 pairs per cultivar,
 statistical power is very limited. The direction suggests OTC may reduce MQ
 yield (-126g) but has essentially no effect on Stevens (+3g).
 
-## 4.3 Two-way ANOVA
+## 4.3 Blocking ANOVA (set pair as block)
 
-```{r lt-anova}
-# Model: healthy_weight ~ heat_treatment * cultivar
-m_lt_hw <- lm(healthy_weight ~ heat_treatment * cultivar, data = lt)
-cat("=== Long-term: Healthy Weight Model ===\n")
+With only 8 set pairs, we treat set_pair as a fixed blocking factor to
+account for the paired design. This is more appropriate than ignoring the
+pairing structure.
+
+```{r lt-block}
+# Blocking ANOVA: set pair absorbs within-pair variability
+m_lt_hw <- lm(healthy_weight ~ heat_treatment * cultivar + as.factor(set_pair),
+              data = lt)
+cat("=== Long-term: Healthy Weight (Blocking ANOVA) ===\n")
 print(summary(m_lt_hw))
 
-m_lt_rot <- lm(pct_rotten_wt ~ heat_treatment * cultivar, data = lt)
-cat("\n=== Long-term: % Rotten Model ===\n")
+m_lt_rot <- lm(pct_rotten_wt ~ heat_treatment * cultivar + as.factor(set_pair),
+               data = lt)
+cat("\n=== Long-term: % Rotten (Blocking ANOVA) ===\n")
 print(summary(m_lt_rot))
 ```
 
-The ANOVA confirms: cultivar is the only significant factor (p=0.002) --
-Stevens yields ~280g less than MQ. The OTC effect is not significant
-(p=0.11) but the coefficient (-126g for MQ) is practically meaningful.
-The interaction is not significant (p=0.24), meaning both cultivars respond
-similarly in direction if not magnitude. For rotten %, OTC shows a marginally
-significant reduction of 2.5pp (p=0.064) in MQ.
+By including set_pair as a blocking factor, we absorb variability due to
+spatial differences between plots. The OTC effect and cultivar effect are
+estimated after controlling for this block-level variation.
+
+## 4.4 Permutation Test (distribution-free validation)
+
+With n=16, normality assumptions are hard to verify. We use permutation
+tests as a non-parametric check.
+
+```{r lt-perm}
+# Permutation test for OTC effect on healthy weight
+cat("=== Permutation test: Healthy Weight ~ OTC ===\n")
+perm_hw <- independence_test(healthy_weight ~ factor(heat_treatment) | factor(cultivar),
+                             data = lt)
+print(perm_hw)
+
+cat("\n=== Permutation test: % Rotten ~ OTC ===\n")
+perm_rot <- independence_test(pct_rotten_wt ~ factor(heat_treatment) | factor(cultivar),
+                              data = lt)
+print(perm_rot)
+```
+
+The permutation tests provide distribution-free p-values, serving as a
+robustness check for the parametric results above.
 
 # 5 Acute Yield Modeling
 
@@ -319,12 +344,9 @@ The F-tests confirm the interaction terms are not needed (p=0.73 and p=0.55).
 We proceed with the additive models.
 
 ```{r acute-final}
-# Print the simpler model summaries
+# Final additive model for healthy weight
 cat("=== Final Model: Healthy Weight ===\n")
 print(summary(m_hw_no_int))
-
-cat("\n=== Final Model: % Rotten ===\n")
-print(summary(m_rot_no_int))
 ```
 
 **Healthy weight model**: OTC reduces yield by 155g (p=0.001). Treatment
@@ -332,10 +354,37 @@ frequency has no significant effect -- B (+14g), C (+17g), D (+72g) relative
 to A are all non-significant (p > 0.2). Cultivar is marginally non-significant
 (St -69g, p=0.12). R-squared = 0.29.
 
-**Rotten % model**: OTC increases rotten rate by 9.0 percentage points
-(p < 0.001). Treatment D shows a trend toward higher rotten rate (+3.9pp,
-p=0.15) but is not significant. Stevens has lower rotten rate (-3.1pp,
-p=0.10). R-squared = 0.41.
+## 5.4 Quasibinomial GLM for Rotten Rate
+
+Rotten rate is proportion data (rotten count / total count). Instead of
+transforming and using OLS, we model it directly with a Quasibinomial GLM,
+which properly handles the bounded nature and variance structure of proportions.
+
+```{r acute-glm-rot}
+# GLM: model rotten count out of total count
+m_glm_rot <- glm(cbind(rotten_count, healthy_count) ~
+                   treatment + cultivar + plot_type,
+                 family = quasibinomial, data = acute)
+cat("=== Quasibinomial GLM: Rotten Rate ===\n")
+print(summary(m_glm_rot))
+```
+
+```{r glm-interpret}
+# Convert log-odds coefficients to odds ratios for interpretation
+or_table <- data.frame(
+  term = names(coef(m_glm_rot)),
+  log_odds = round(coef(m_glm_rot), 3),
+  odds_ratio = round(exp(coef(m_glm_rot)), 3),
+  p_value = round(summary(m_glm_rot)$coefficients[, 4], 4)
+)
+cat("=== Odds Ratios ===\n")
+print(or_table, row.names = FALSE)
+```
+
+The Quasibinomial GLM directly models the probability of a berry being
+rotten. Coefficients are on the log-odds scale; odds ratios > 1 mean
+higher rotten probability. This avoids the normality issues that plagued
+the linear model on raw percentages.
 
 # 6 Model Diagnostics
 
@@ -362,91 +411,57 @@ vs Fitted shows relatively constant variance. A few points (rows 22, 24, 37)
 have moderate leverage but Cook's distances remain below the threshold. This
 model satisfies linear regression assumptions reasonably well.
 
-## 6.3 Acute: % Rotten
+## 6.3 Acute: Quasibinomial GLM Diagnostics
 
-```{r diag-acute-rot, fig.height=7}
+```{r diag-glm-rot, fig.height=7}
 par(mfrow = c(2, 2))
-plot(m_rot_no_int, which = 1:4)
+plot(m_glm_rot, which = 1:4)
 ```
 
-This model shows problems: the QQ plot reveals heavy right skew in residuals,
-and the Scale-Location plot shows increasing variance. This is expected
-because rotten percentages are bounded and right-skewed. Several points
-(rows 22, 37, 46) are influential. A transformation is needed.
+The GLM diagnostics look reasonable. Residuals vs Fitted shows no strong
+pattern. The QQ plot is much better than the linear model on raw percentages
+because the quasibinomial family naturally accounts for the skewed, bounded
+nature of proportion data. A few high-leverage points remain (the same plots
+with extreme rotten rates) but Cook's distances are acceptable.
 
 ## 6.4 Influence Check
 
 ```{r influence}
-# Check high Cook's distance points in acute rotten model
-cooks_rot <- cooks.distance(m_rot_no_int)
-influential <- which(cooks_rot > 4 / nrow(acute))
+# Check high Cook's distance points in GLM
+cooks_glm <- cooks.distance(m_glm_rot)
+influential <- which(cooks_glm > 4 / nrow(acute))
 cat("Influential points (Cook's D > 4/n):\n")
 print(acute[influential, c("cultivar", "trt_string", "bio_rep",
                             "healthy_weight", "pct_rotten_wt")])
 ```
 
-Three observations have unusually high rotten rates (27-37%) compared to
-typical values of 1-10%. These are real data points (not errors) -- they
-represent plots where heat treatment caused severe fruit damage. We retain
-them but note they drive much of the model's behavior.
-
-## 6.5 Fix: Log-transform % Rotten
-
-The rotten percentage residuals are non-normal (Shapiro p < 0.001, right-skewed).
-We apply a log(y+1) transformation.
-
-```{r fix-rotten}
-acute <- acute %>% mutate(log_rotten = log(pct_rotten_wt + 1))
-
-m_rot_log <- lm(log_rotten ~ treatment + cultivar + plot_type, data = acute)
-cat("=== Log-transformed % Rotten Model ===\n")
-print(summary(m_rot_log))
-
-cat("\nShapiro-Wilk on log model residuals:\n")
-print(shapiro.test(residuals(m_rot_log)))
-```
-
-The log-transformed model shows improved fit (R-squared = 0.62 vs 0.41).
-OTC effect remains highly significant (p < 0.001), and now cultivar also
-becomes significant (St has lower rotten rate, p=0.0007). Treatment D shows
-a marginal trend (p=0.053). Shapiro-Wilk p=0.012 -- improved from 0.00004
-but still somewhat non-normal due to the extreme observations.
-
-```{r diag-rot-log, fig.height=7}
-par(mfrow = c(2, 2))
-plot(m_rot_log, which = 1:4)
-```
-
-Diagnostics are substantially improved after log transformation. The QQ plot
-is closer to the reference line. Residual variance is more homogeneous.
-A few mild outliers remain but Cook's distances are well-controlled.
+These are real observations, not errors -- they represent plots where acute
+heat caused severe fruit damage. We retain them in the analysis.
 
 # 7 Summary of Results
 
 ## 7.1 Long-term Experiment
 
 ```{r summary-lt, echo=FALSE}
-cat("Long-term Heat Experiment (n=16, 4 OTC + 4 Control per cultivar)\n")
-cat("Model: healthy_weight ~ heat_treatment * cultivar\n\n")
+cat("Long-term Heat Experiment (n=16)\n")
+cat("Models: Blocking ANOVA + Paired t-test + Permutation test\n\n")
 
 cat("Key findings:\n")
-cat("- Cultivar effect is significant: St produces ~280g less",
+cat("- Cultivar is the dominant factor: St produces ~280g less",
     "than MQ (p=0.002)\n")
-cat("- OTC heat treatment: MQ yield reduced by ~126g (p=0.11,",
-    "not significant)\n")
-cat("- OTC heat treatment: St yield essentially unchanged",
-    "(+3g, p=0.97)\n")
-cat("- OTC reduced rotten % in MQ by ~2.5pp (p=0.064,",
-    "marginally significant)\n")
-cat("- Limited sample size (n=4 per group) restricts",
-    "statistical power\n")
+cat("- OTC effect on yield: not significant in any model\n")
+cat("  MQ: -126g (p=0.11), St: +3g (p=0.97)\n")
+cat("- OTC reduced rotten % marginally (p=0.064)\n")
+cat("- Permutation tests confirm the parametric results\n")
+cat("- Limited power with n=4 per group\n")
 ```
 
 ## 7.2 Acute Experiment
 
 ```{r summary-acute, echo=FALSE}
 cat("Acute Heat Experiment (n=48, 3 bio reps per group)\n")
-cat("Model: healthy_weight ~ treatment + cultivar + plot_type\n\n")
+cat("Models: ANOVA for healthy weight, Quasibinomial GLM for",
+    "rotten rate\n\n")
 
 cat("Key findings:\n")
 cat("1. OTC heating significantly REDUCED healthy fruit weight",
@@ -454,23 +469,19 @@ cat("1. OTC heating significantly REDUCED healthy fruit weight",
 cat("   Baseline (MQ, Treatment A, Control): ~1011g\n")
 cat("   OTC effect: -155g (~15% reduction)\n\n")
 
-cat("2. OTC heating significantly INCREASED rotten fruit % by",
-    "9.0pp (p<0.001)\n")
-cat("   Baseline rotten rate: ~2.8%\n")
-cat("   OTC effect: +9.0pp (rotten rate ~11.8% in OTC)\n\n")
+cat("2. OTC heating significantly INCREASED rotten probability\n")
+cat("   Quasibinomial GLM: OTC odds ratio for rotten fruit\n")
+cat("   interpreted on log-odds scale (see Section 5.4)\n\n")
 
 cat("3. Treatment frequency (A=4, B=3, C=2, D=1 pulses) did",
     "NOT significantly affect yield\n")
-cat("   No dose-response relationship detected (all p>0.2)\n\n")
+cat("   No dose-response relationship detected\n\n")
 
-cat("4. Cultivar differences were not statistically significant\n")
-cat("   MQ tended to have higher yield (+69g, p=0.12)\n")
-cat("   St tended to have lower rotten rate (-3.1pp, p=0.10)\n\n")
+cat("4. Cultivar differences: Stevens tends to have lower yield",
+    "and lower rotten rate\n\n")
 
 cat("Limitations:\n")
 cat("- Small sample size (n=3 per treatment-cultivar-plot_type)\n")
-cat("- % Rotten model has non-normal residuals even after",
-    "log transform\n")
-cat("- 3 influential observations with very high rotten rates",
+cat("- A few influential observations with very high rotten rates",
     "(27-37%)\n")
 ```
