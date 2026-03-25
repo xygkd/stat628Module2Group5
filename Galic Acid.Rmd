@@ -1,0 +1,355 @@
+---
+title: "Gallic Acid"
+output:
+  html_document: default
+  pdf_document: default
+date: "2026-03-25"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1. Libraries
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(ggplot2)
+library(skimr)
+library(readxl)
+library(janitor)
+library(broom)
+library(knitr)
+```
+
+## 1 Data description：
+The phenolic dataset contains absorbance measured at a wavelength of 765 nm, which can be used to estimate the concentration of gallic acid in cranberry juice. Because the samples were diluted during the experiment, all estimated concentrations ultimately need to be multiplied by 10 to restore them to the true concentration in the undiluted juice.
+
+## 2 Data Cleaning
+The sample_id contains the type of experiment, cultivar, processing method and duplicate information.
+According to the sample number, the data is classified into three categories:
+-standard: Used to establish calibration curves
+-acute sample
+-long-term sample
+During the data cleaning process, it was found that some samples starting with "std" (such as std1 and stdc1) do not correspond to valid standard concentrations. These abnormal samples have been eliminated, and only the preset standard concentrations (0, 50, 100, 150, 250, 500, 750) have been retained to ensure the accuracy of the calibration model.
+```{r}
+pheno_dir <- "cranberry-data/data_mixed"
+
+# read phenolics raw data
+d_pheno <- read_xlsx(
+  file.path(pheno_dir, "Phenolics_RawData.xlsx")
+) |>
+  janitor::clean_names()
+
+glimpse(d_pheno)
+skim(d_pheno)
+
+# convert all character columns to lowercase
+d_pheno <- d_pheno |>
+  mutate(across(where(is.character), tolower))
+
+# clean key variables and classify sample types
+d_pheno <- d_pheno |>
+  mutate(
+    date = as.Date(date),
+
+    exper_type = case_when(
+      str_detect(sample_id, "^std(0|50|100|150|250|500|750)$") ~ "standard",
+      str_detect(sample_id, "lt") ~ "long_term",
+      TRUE ~ "acute"
+    ),
+
+    cultivar = case_when(
+      exper_type != "standard" & str_starts(sample_id, "st") ~ "st",
+      exper_type != "standard" & str_starts(sample_id, "mq") ~ "mq",
+      TRUE ~ NA_character_
+    ),
+
+    plot_num_lt = case_when(
+      exper_type == "long_term" ~ str_extract(sample_id, "\\d+$"),
+      TRUE ~ NA_character_
+    ),
+
+    bio_replicate = case_when(
+      exper_type == "acute" ~ str_extract(sample_id, "\\d+$"),
+      TRUE ~ NA_character_
+    ),
+
+    # acute parsing
+    acute_code = case_when(
+      exper_type == "acute" ~ str_remove(sample_id, "^(st|mq)"),
+      TRUE ~ NA_character_
+    ),
+
+    treatment = case_when(
+      exper_type == "acute" & str_detect(acute_code, "^a0") ~ "a0",
+      exper_type == "acute" & str_detect(acute_code, "^a") ~ "a",
+      exper_type == "acute" & str_detect(acute_code, "^b") ~ "b",
+      exper_type == "acute" & str_detect(acute_code, "^c") ~ "c",
+      exper_type == "acute" & str_detect(acute_code, "^d") ~ "d",
+      TRUE ~ NA_character_
+    ),
+
+    plot_type = case_when(
+      exper_type == "acute" & str_detect(acute_code, "c\\d+$") ~ "control",
+      exper_type == "acute" ~ "otc",
+      TRUE ~ NA_character_
+    )
+  )
+
+# quick checks
+d_pheno |> count(exper_type)
+d_pheno |> filter(exper_type == "acute") |> count(treatment, plot_type, cultivar)
+d_pheno |> filter(exper_type == "long_term") |> count(cultivar, plot_num_lt)
+```
+
+```{r}
+# Remove invalid standard samples
+d_pheno <- d_pheno |>
+  filter(
+    !str_detect(sample_id, "^std") |
+    str_detect(sample_id, "^std(0|50|100|150|250|500|750)$")
+  )
+# check remaining standard samples
+d_pheno |>
+  distinct(sample_id) |>
+  filter(str_detect(sample_id, "^std"))
+```
+
+# 3. Calibration: absorbance -> concentration
+For each experimental date, linear regression models were repeatedly established for the three groups of experiments respectively:
+$$
+\text{Absorbance} = \beta_0 + \beta_1 \times \text{Concentration}
+$$
+Then：
+$$
+\text{Concentration} = \frac{\text{Absorbance} - \beta_0}{\beta_1}
+$$
+And multiply the result by 10 to restore the concentration level of the undiluted juice.
+
+```{r}
+# separate standard and non-standard samples
+d_std <- d_pheno |>
+  filter(exper_type == "standard")
+
+d_nonstd <- d_pheno |>
+  filter(exper_type != "standard")
+
+# function to convert absorbance to concentration for one rep
+convert_conc <- function(y, b0, b1) {
+  ((y - b0) / b1) * 10
+}
+
+# store converted data and calibration summaries
+d_pheno_conc_list <- list()
+calibration_summary_list <- list()
+
+for (i in unique(d_pheno$date)) {
+
+  std_i <- d_std |> filter(date == i)
+  nonstd_i <- d_nonstd |> filter(date == i)
+
+  if (nrow(std_i) == 0) next
+
+  # fit 3 separate standard curves
+  m1 <- lm(rep1_absorbance_765_nm ~ tube_number, data = std_i)
+  m2 <- lm(rep2_absorbance_765_nm ~ tube_number, data = std_i)
+  m3 <- lm(rep3_absorbance_765_nm ~ tube_number, data = std_i)
+
+  # extract coefficients
+  b01 <- coef(m1)[1]; b11 <- coef(m1)[2]
+  b02 <- coef(m2)[1]; b12 <- coef(m2)[2]
+  b03 <- coef(m3)[1]; b13 <- coef(m3)[2]
+
+  # convert absorbance to concentration
+  nonstd_i <- nonstd_i |>
+    mutate(
+      rep1_conc = round(convert_conc(rep1_absorbance_765_nm, b01, b11), 2),
+      rep2_conc = round(convert_conc(rep2_absorbance_765_nm, b02, b12), 2),
+      rep3_conc = round(convert_conc(rep3_absorbance_765_nm, b03, b13), 2)
+    )
+
+  d_pheno_conc_list[[as.character(i)]] <- nonstd_i
+
+  calibration_summary_list[[as.character(i)]] <- tibble(
+    date = i,
+    rep = c("rep1", "rep2", "rep3"),
+    intercept = c(b01, b02, b03),
+    slope = c(b11, b12, b13),
+    r_squared = c(summary(m1)$r.squared,
+                  summary(m2)$r.squared,
+                  summary(m3)$r.squared
+    )
+  )
+}
+
+
+d_pheno_conc <- bind_rows(d_pheno_conc_list)
+calibration_summary <- bind_rows(calibration_summary_list)
+
+calibration_summary
+```
+
+# 4. Save required csv file
+```{r}
+phenolics_concentrations <- d_pheno_conc |>
+  select(
+    date, sample_id, tube_number,
+    concentration_rep1 = rep1_conc,
+    concentration_rep2 = rep2_conc,
+    concentration_rep3 = rep3_conc
+  )
+
+write_csv(phenolics_concentrations, "Phenolics_concentrations.csv")
+
+phenolics_concentrations |> slice_head(n = 10)
+```
+
+# 5. Compute mean concentration across lab replicates
+We compute the mean concentration across laboratory replicates for each sample.
+```{r}
+d_pheno_conc <- d_pheno_conc |>
+  rowwise() |>
+  mutate(
+    concentration_mean = mean(c_across(c(rep1_conc, rep2_conc, rep3_conc)), na.rm = TRUE),
+    concentration_sd   = sd(c_across(c(rep1_conc, rep2_conc, rep3_conc)), na.rm = TRUE),
+    n_lab_reps         = sum(!is.na(c_across(c(rep1_conc, rep2_conc, rep3_conc))))
+  ) |>
+  ungroup()
+
+d_pheno_conc |>
+  count(exper_type)
+```
+# 6. Exploratory plots
+## 6.1 Overall distribution
+The distribution of gallic acid concentration appears reasonably spread with no extreme outliers.
+```{r}
+ggplot(d_pheno_conc, aes(x = concentration_mean)) +
+  geom_histogram(bins = 30) +
+  theme_minimal() +
+  labs(
+    title = "Distribution of Mean Gallic Acid Concentration",
+    x = "Mean concentration",
+    y = "Count"
+  )
+```
+
+## 6.2 Acute experiment boxplot (exclude A0 as allowed by requirement)
+```{r}
+d_pheno_conc |>
+  filter(exper_type == "acute", !str_detect(sample_id, "a0")) |>
+  ggplot(aes(x = treatment, y = concentration_mean, fill = plot_type)) +
+  geom_boxplot() +
+  facet_wrap(~ cultivar) +
+  theme_minimal() +
+  labs(
+    title = "Acute Experiment: Gallic Acid Concentration",
+    x = "Heat treatment",
+    y = "Mean gallic acid concentration",
+    fill = "Patch type"
+  )
+
+```
+
+## 6.3 Long-term plot-level view
+The concentration of gallic acid varies from plot to plot. The value of Mullica Queen is generally higher than that of Stevens.
+```{r}
+d_pheno_conc |>
+  filter(exper_type == "long_term") |>
+  mutate(plot_num_lt = as.numeric(plot_num_lt)) |>
+  ggplot(aes(x = plot_num_lt, y = concentration_mean, color = cultivar)) +
+  geom_point(size = 3) +
+  theme_minimal() +
+  labs(
+    title = "Long-term Experiment: Gallic Acid by Plot",
+    x = "Long-term plot number",
+    y = "Mean gallic acid concentration",
+    color = "Cultivar"
+  )
+```
+
+# 7. Modeling
+## 7.1 Acute Experiment Analysis
+```{r}
+acute_gallic <- d_pheno_conc |>
+  filter(exper_type == "acute", !str_detect(sample_id, "a0")) |>
+  mutate(
+    treatment = factor(treatment, levels = c("a", "b", "c", "d")),
+    cultivar = factor(cultivar),
+    plot_type = factor(plot_type, levels = c("control", "otc"))
+  )
+
+acute_gallic |> 
+  count(cultivar, treatment, plot_type)
+
+model_acute <- lm(
+  concentration_mean ~ treatment * cultivar + plot_type,
+  data = acute_gallic
+)
+
+summary(model_acute)
+anova(model_acute)
+```
+The interaction between the treatment and the variety was taken into consideration in the design experiment. However, the data support for the interaction terms is poor, with one coefficient that cannot be estimated, and the model fitting has not improved significantly. Therefore, a simpler additive model was adopted.
+
+# 7.1.1 Try for additive model
+```{r}
+model_acute_additive <- lm(
+  concentration_mean ~ treatment + cultivar + plot_type,
+  data = acute_gallic
+)
+
+anova(model_acute_additive, model_acute)
+summary(model_acute_additive)
+```
+The results of the additive model show that the cultivar effect is significantly manifested. Among them, the gallic acid concentration of Stevens was significantly lower than that of Mullica Queen. Compared with treatment A, treatment D was significantly associated with a reduction in concentration, while the concentration reduction effects with treatments B and C were relatively weak. After controlling the treatment and the cultivar effect, no significant differences were found between the OTC treatment and the control plots.
+
+# 7.2 Long-term Model
+```{r}
+# assignment states:
+# Stevens field = plots 1-8, MQ field = plots 9-16
+# OTC = 1-4 and 9-12; control = 5-8 and 13-16
+lt_map <- tibble(
+  plot_num_lt = as.character(1:16),
+  heat_treatment = c(
+    "otc", "otc", "otc", "otc",
+    "control", "control", "control", "control",
+    "otc", "otc", "otc", "otc",
+    "control", "control", "control", "control"
+  ),
+  set_pair = c(1, 2, 3, 4, 1, 2, 3, 4, 5, 6, 7, 8, 5, 6, 7, 8)
+)
+
+lt_gallic <- d_pheno_conc |>
+  filter(exper_type == "long_term") |>
+  left_join(lt_map, by = "plot_num_lt") |>
+  mutate(
+    heat_treatment = factor(heat_treatment, levels = c("control", "otc")),
+    cultivar = factor(cultivar),
+    set_pair = factor(set_pair)
+  )
+
+lt_gallic |>
+  count(cultivar, heat_treatment)
+
+model_lt <- lm(
+  concentration_mean ~ heat_treatment * cultivar + set_pair,
+  data = lt_gallic
+)
+
+summary(model_lt)
+anova(model_lt)
+```
+Based on the experimental design, a model for the interaction between heat treatment and varieties was initially considered. However, due to the small sample size and the existence of unestimable coefficients, the data cannot well support the interaction model. Therefore, a simpler additive model is adopted.
+
+# 7.2.2 Try for additive model
+```{r}
+model_lt_additive  <- lm(
+  concentration_mean ~ heat_treatment + cultivar + set_pair,
+  data = lt_gallic
+)
+
+summary(model_lt_additive)
+anova(model_lt_additive)
+```
+The results of the additive model showed a strong cultivar effect, and Stevens' gallic acid concentration was significantly lower than that of Mullica Queen.There is no clear evidence that long-term heat treatment (OTC) affects gallic acid concentration. Differences observed across plot groups suggest the presence of spatial or environmental heterogeneity. Overall, these findings indicate that variation in gallic acid concentration is more likely driven by cultivar differences and spatial variability rather than long-term heat exposure.
