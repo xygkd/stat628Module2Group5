@@ -200,12 +200,12 @@ phenolics_concentrations <- d_pheno_conc |>
     concentration_rep3 = rep3_conc
   )
 
-write_csv(phenolics_concentrations, "Phenolics_concentrations.csv")
+write_csv(phenolics_concentrations, "Phenolics_concentrations_clean.csv")
 
 phenolics_concentrations |> slice_head(n = 10)
 ```
 
-# 5. Compute mean concentration across lab replicates
+# 5. Compute mean concentration across lab replicates and save it
 We compute the mean concentration across laboratory replicates for each sample.
 ```{r}
 d_pheno_conc <- d_pheno_conc |>
@@ -219,7 +219,17 @@ d_pheno_conc <- d_pheno_conc |>
 
 d_pheno_conc |>
   count(exper_type)
+
+final_gallic <- d_pheno_conc |>
+  select(
+    date, sample_id, exper_type, cultivar, treatment, plot_type,
+    tube_number, concentration_mean, concentration_sd, n_lab_reps
+  )
+
+write_csv(final_gallic, "gallic_concentration.csv")
 ```
+
+
 # 6. Exploratory plots
 ## 6.1 Overall distribution
 The distribution of gallic acid concentration appears reasonably spread with no extreme outliers.
