@@ -1,0 +1,629 @@
+---
+title: "Cranberries and Heat Stress: Technical Report"
+subtitle: "STAT 628 Module 2 --- Group 5"
+output:
+  pdf_document:
+    toc: false
+    number_sections: true
+    fig_caption: true
+    latex_engine: xelatex
+    keep_tex: false
+header-includes:
+  - \usepackage{booktabs}
+  - \usepackage{float}
+  - \floatplacement{figure}{H}
+  - \floatplacement{table}{H}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, message = FALSE, warning = FALSE,
+  fig.width = 7, fig.height = 4.5, fig.pos = "H",
+  out.width = "85%", fig.align = "center"
+)
+library(tidyverse)
+library(readxl)
+library(lubridate)
+library(knitr)
+library(coin)
+library(janitor)
+```
+
+# Summary
+
+This report investigates the effects of heat stress on cranberry production
+using data from two field experiments conducted in western Wisconsin in 2024.
+The long-term experiment placed open top chambers (OTCs) over plots for the
+entire growing season, while the acute experiment delivered short two-hour
+heat pulses at approximately 40 degrees Celsius with varying frequency
+(1 to 4 pulses). Two cultivars were studied: Mullica Queen (MQ) and Stevens (St).
+
+Our main findings are as follows. First, long-term OTC warming did not
+significantly affect either yield or gallic acid concentration; cultivar was
+the dominant factor in both outcomes. Second, acute heat pulses significantly
+reduced healthy fruit weight by 155 grams per plot (about 15%) and increased
+the odds of fruit rot by 3.8 times. Third, the number of heat pulses did not
+matter: one pulse caused the same damage as four, suggesting a threshold
+damage mechanism around 35 degrees Celsius. Fourth, temperature data confirmed
+that OTC successfully raised fruit temperature by approximately 16 degrees
+above control plots. Finally, gallic acid concentration was primarily driven
+by cultivar differences rather than heat treatment.
+
+# Introduction
+
+Cranberries are Wisconsin's state fruit, with over half of all US cranberry
+production located in the state. Anecdotal evidence suggests that rising
+temperatures and more frequent heat events may increase fruit rot and reduce
+yields. To investigate this, researchers conducted two experiments examining
+different aspects of heat stress on cranberry production.
+
+The **long-term experiment** placed OTC chambers over 16 plots (8 per cultivar)
+from early June through late September. Each OTC plot was paired with a nearby
+control plot that had no chamber.
+
+The **acute experiment** delivered short, intense heat pulses using insulated
+OTCs with heat lamps controlled to reach 40 degrees Celsius. Four treatment
+levels (A through D) received 4, 3, 2, and 1 pulse(s), respectively. Each
+treatment had 3 biological replicates per cultivar, with paired control plots.
+Treatment A0 data were discarded because the heat treatment was too intense
+and damaged the plants.
+
+This report addresses three questions: (1) how do heat treatments affect
+cranberry yield? (2) how do heat treatments affect gallic acid concentration?
+(3) how effectively did the experimental setup control temperature, and can
+actual temperature measurements help explain yield variation?
+
+Section 3 presents the yield analysis. Section 4 covers gallic acid
+concentration estimation and analysis. Section 5 addresses temperature and
+relative humidity data. Section 6 provides conclusions.
+
+# Experimental Design and Data
+
+## Yield Data
+
+The long-term yield dataset (`LTYielddata2024.csv`) contains one row per plot
+(n = 16) with counts and weights of healthy and rotten berries harvested from
+a two-square-foot area.
+
+The acute yield dataset (`Acute HS-Yield_RawData 2024.xlsx`) contains one row
+per plot (n = 48, after excluding A0 treatment). Variables include cultivar,
+treatment (A through D or corresponding control), biological replicate number,
+and counts and weights of healthy and rotten fruit.
+
+## Phenolics Data
+
+The file `Phenolics_RawData.xlsx` contains absorbance measurements at 765 nm.
+Each sample was measured three times (three lab preparation replicates).
+Standard samples with known concentrations (0 to 750 units) were included
+on each lab date to construct calibration curves. We parsed sample identifiers
+to classify each row by experiment type, cultivar, treatment, and plot.
+
+## Temperature and Relative Humidity Data
+
+Temperature data were collected from two sensor types during the acute
+experiment. The 4-channel thermocouple sensors recorded canopy temperature
+and up to three fruit temperatures. The HOBO sensors recorded canopy
+temperature and relative humidity. We scoped our temperature analysis to
+the acute experiment only, because the long-term yield analysis showed no
+significant heat effect, making long-term temperature analysis less
+informative for understanding yield outcomes.
+
+Data from 70 four-channel files (52,925 clean rows) and 59 HOBO files
+(10,222 clean rows) were cleaned by: (1) discarding A0 treatment data,
+(2) pruning each file to the two-hour pulse window specified in the overview
+file, and (3) flagging unrealistic temperatures (sentinel values like
+-888.88 and readings outside -10 to 60 degrees Celsius). HOBO files for
+tests D1 (September 18) and A4 (September 24) were missing.
+
+# Yield Analysis
+
+## Long-Term Experiment
+
+```{r lt-data}
+# Load long-term yield data
+lt_raw <- read_csv("cranberry-data/data_longterm/LTYielddata2024.csv",
+                   skip = 3, show_col_types = FALSE,
+                   col_names = c("cultivar", "heat_treatment", "plot",
+                                 "rotten_count", "rotten_weight",
+                                 "healthy_count", "healthy_weight",
+                                 "total_count", "total_weight"))
+
+lt <- lt_raw %>%
+  filter(!is.na(cultivar), cultivar != "Cultivar") %>%
+  mutate(across(c(plot, rotten_count:total_weight), as.numeric),
+         heat_treatment = str_trim(heat_treatment),
+         pct_rotten_wt = rotten_weight / total_weight * 100)
+
+# Assign set pair for blocking
+lt <- lt %>%
+  mutate(set_pair = case_when(
+    plot %in% c(1, 5) ~ 1, plot %in% c(2, 6) ~ 2,
+    plot %in% c(3, 7) ~ 3, plot %in% c(4, 8) ~ 4,
+    plot %in% c(9, 13) ~ 5, plot %in% c(10, 14) ~ 6,
+    plot %in% c(11, 15) ~ 7, plot %in% c(12, 16) ~ 8
+  ))
+```
+
+Figure 1 shows the distribution of healthy fruit weight by cultivar and heat
+treatment. Mullica Queen consistently yields more than Stevens. The OTC effect
+is not visually apparent, and the within-group variability is large.
+
+```{r fig-lt-hw, fig.cap="Figure 1: Healthy fruit weight in the long-term experiment. Mullica Queen produces approximately 280 grams more than Stevens. No clear OTC effect is visible."}
+ggplot(lt, aes(x = heat_treatment, y = healthy_weight, fill = heat_treatment)) +
+  geom_boxplot(alpha = 0.7) +
+  geom_jitter(width = 0.1, size = 2) +
+  facet_wrap(~ cultivar) +
+  scale_fill_manual(values = c("Control" = "#0072B2", "OTC" = "#D55E00")) +
+  labs(x = "Heat Treatment", y = "Healthy Fruit Weight (g)") +
+  theme_minimal() + theme(legend.position = "none")
+```
+
+We used a blocking ANOVA with set pair as a fixed blocking factor to account
+for the paired experimental design. With only 8 set pairs, treating pair as a
+fixed block is more appropriate than a random effect, which would require
+estimating a variance component from very few groups. We supplemented the
+parametric analysis with a permutation test to verify robustness to
+distributional assumptions.
+
+```{r lt-model}
+# Blocking ANOVA
+m_lt <- lm(healthy_weight ~ heat_treatment * cultivar + as.factor(set_pair),
+           data = lt)
+lt_coefs <- broom::tidy(m_lt) %>%
+  filter(!str_detect(term, "set_pair")) %>%
+  mutate(across(where(is.numeric), ~ round(., 3)))
+
+kable(lt_coefs, caption = "Table 1: Long-term yield model coefficients (blocking ANOVA).",
+      col.names = c("Term", "Estimate", "Std. Error", "t", "p-value"))
+```
+
+```{r lt-perm}
+# Permutation test for robustness
+perm_lt <- independence_test(
+  healthy_weight ~ factor(heat_treatment) | factor(cultivar), data = lt)
+```
+
+The blocking ANOVA (Table 1) shows that cultivar is the only statistically
+discernible factor: Stevens produces approximately 280 grams less healthy
+fruit than Mullica Queen (p = 0.002). The OTC heat treatment effect is not
+statistically discernible (p = 0.19), though the estimated reduction of
+126 grams for Mullica Queen is practically meaningful and may warrant further
+investigation with larger sample sizes. The permutation test confirms this
+conclusion (p = `r round(pvalue(perm_lt), 3)`).
+
+## Acute Experiment
+
+```{r acute-data}
+# Load acute yield data
+acute_raw <- read_excel("cranberry-data/data_acute/Acute HS-Yield_RawData 2024.xlsx",
+                        sheet = "Acute Heat stress", skip = 4)
+
+acute <- acute_raw %>%
+  select(cultivar = Cultivar, trt_string = Treatment,
+         bio_rep = `# OTC/ plot`,
+         rotten_count = `Rotten fruit #`,
+         rotten_weight = `Rotten fruitWeight (g)`,
+         healthy_count = `Non-rotten fruit#`,
+         healthy_weight = `Non-rotten fruitWeight (g)`,
+         total_count = `Total #`,
+         total_weight = `Total Weight (g)`) %>%
+  filter(!is.na(trt_string), !str_detect(trt_string, "A0")) %>%
+  mutate(
+    is_control = nchar(trt_string) >= 2 & str_detect(trt_string, "C$"),
+    treatment = str_extract(trt_string, "^[A-D]"),
+    plot_type = if_else(is_control, "Control", "OTC"),
+    bio_rep = as.integer(bio_rep),
+    pct_rotten_wt = rotten_weight / total_weight * 100
+  )
+```
+
+### Healthy Fruit Weight
+
+Figure 2 shows healthy fruit weight by treatment and plot type. OTC plots
+(orange) consistently yield less than control plots (blue) across all
+treatments and cultivars. There is no visible dose-response pattern.
+
+```{r fig-acute-hw, fig.cap="Figure 2: Healthy fruit weight in the acute experiment. OTC plots yield less than controls across all treatments. No dose-response pattern is apparent."}
+ggplot(acute, aes(x = treatment, y = healthy_weight, fill = plot_type)) +
+  geom_boxplot(alpha = 0.7) +
+  geom_jitter(aes(color = plot_type),
+              position = position_jitterdodge(jitter.width = 0.1), size = 1.5) +
+  facet_wrap(~ cultivar) +
+  scale_fill_manual(values = c("Control" = "#0072B2", "OTC" = "#D55E00")) +
+  scale_color_manual(values = c("Control" = "#0072B2", "OTC" = "#D55E00")) +
+  labs(x = "Treatment (A = 4, B = 3, C = 2, D = 1 pulse)",
+       y = "Healthy Fruit Weight (g)", fill = "Plot Type", color = "Plot Type") +
+  theme_minimal() + theme(legend.position = "bottom")
+```
+
+We fitted a linear model for healthy fruit weight. An F-test confirmed that
+the treatment-by-cultivar interaction was not needed (p = 0.73), so we used
+the additive model.
+
+```{r acute-hw-model}
+m_hw <- lm(healthy_weight ~ treatment + cultivar + plot_type, data = acute)
+hw_coefs <- broom::tidy(m_hw) %>%
+  mutate(across(where(is.numeric), ~ round(., 3)))
+
+kable(hw_coefs, caption = "Table 2: Acute healthy weight model coefficients.",
+      col.names = c("Term", "Estimate", "Std. Error", "t", "p-value"))
+```
+
+Table 2 shows that OTC heating reduced healthy fruit weight by an estimated
+155 grams (p = 0.001), approximately a 15% reduction from the control
+baseline of about 1,010 grams. Treatment frequency was not statistically
+discernible (all p > 0.2). The cultivar effect was marginally non-discernible
+(Stevens 69 grams less, p = 0.12).
+
+### Rotten Fruit Rate
+
+Rotten fruit rate is proportion data: the number of rotten berries out of the
+total count. Each plot has a different total berry count (ranging from 250 to
+630). We used a quasibinomial generalized linear model, which directly models
+the probability of a berry being rotten without requiring transformation. The
+quasi-dispersion parameter accounts for overdispersion (actual variance
+exceeding the binomial assumption).
+
+```{r fig-acute-rot, fig.cap="Figure 3: Rotten fruit percentage in the acute experiment. OTC plots have dramatically higher rotten rates (5--37%) compared to controls (1--5%)."}
+ggplot(acute, aes(x = treatment, y = pct_rotten_wt, fill = plot_type)) +
+  geom_boxplot(alpha = 0.7) +
+  geom_jitter(aes(color = plot_type),
+              position = position_jitterdodge(jitter.width = 0.1), size = 1.5) +
+  facet_wrap(~ cultivar) +
+  scale_fill_manual(values = c("Control" = "#0072B2", "OTC" = "#D55E00")) +
+  scale_color_manual(values = c("Control" = "#0072B2", "OTC" = "#D55E00")) +
+  labs(x = "Treatment (A = 4, B = 3, C = 2, D = 1 pulse)",
+       y = "Rotten Fruit (% by Weight)", fill = "Plot Type", color = "Plot Type") +
+  theme_minimal() + theme(legend.position = "bottom")
+```
+
+```{r acute-glm}
+m_rot <- glm(cbind(rotten_count, healthy_count) ~ treatment + cultivar + plot_type,
+             family = quasibinomial, data = acute)
+rot_coefs <- broom::tidy(m_rot) %>%
+  mutate(odds_ratio = round(exp(estimate), 3),
+         across(where(is.numeric), ~ round(., 3)))
+
+kable(rot_coefs %>% select(term, estimate, std.error, p.value, odds_ratio),
+      caption = "Table 3: Quasibinomial GLM for rotten fruit rate. Odds ratios greater than 1 indicate higher probability of rot.",
+      col.names = c("Term", "Log-odds", "Std. Error", "p-value", "Odds Ratio"))
+```
+
+The quasibinomial GLM (Table 3) shows that OTC heating increases the odds of
+a berry being rotten by a factor of 3.8 (p < 0.001). Control plots have
+rotten rates of 1 to 5%, while OTC plots range from 5 to 37%.
+
+### Model Diagnostics
+
+```{r fig-diag-hw, fig.height=6, fig.cap="Figure 4: Diagnostic plots for the acute healthy weight model. Residuals are approximately normal with no severe patterns."}
+par(mfrow = c(2, 2))
+plot(m_hw, which = 1:4)
+```
+
+Figure 4 shows that the healthy weight model satisfies linear regression
+assumptions reasonably well. The QQ plot follows the reference line, and
+residual variance is approximately constant. A few observations have moderate
+leverage but Cook's distances remain below the threshold.
+
+# Gallic Acid Analysis
+
+## Calibration and Concentration Estimation
+
+Gallic acid concentration was estimated from absorbance measurements using
+linear calibration curves. For each lab date and each of the three lab
+preparation replicates, we fitted a separate linear regression of absorbance
+on known standard concentrations:
+
+$$
+\text{Absorbance} = \beta_0 + \beta_1 \times \text{Concentration} + \varepsilon
+$$
+
+We then inverted this equation to estimate concentrations from measured
+absorbances and multiplied by 10 to account for the 10-to-1 dilution:
+
+$$
+\text{Estimated concentration} = \frac{\text{Absorbance} - \hat{\beta}_0}{\hat{\beta}_1} \times 10
+$$
+
+Invalid standard samples (those not matching preset concentrations of 0, 50,
+100, 150, 250, 500, and 750) were removed before fitting calibration curves.
+
+```{r gallic-calibration}
+pheno_dir <- "cranberry-data/data_mixed"
+d_pheno <- read_xlsx(file.path(pheno_dir, "Phenolics_RawData.xlsx")) %>%
+  janitor::clean_names() %>%
+  mutate(across(where(is.character), tolower))
+
+# Classify sample types
+d_pheno <- d_pheno %>%
+  mutate(
+    date = as.Date(date),
+    exper_type = case_when(
+      str_detect(sample_id, "^std(0|50|100|150|250|500|750)$") ~ "standard",
+      str_detect(sample_id, "lt") ~ "long_term",
+      TRUE ~ "acute"
+    ),
+    cultivar = case_when(
+      exper_type != "standard" & str_starts(sample_id, "st") ~ "St",
+      exper_type != "standard" & str_starts(sample_id, "mq") ~ "MQ",
+      TRUE ~ NA_character_
+    )
+  )
+
+# Remove invalid standards
+d_pheno <- d_pheno %>%
+  filter(!str_detect(sample_id, "^std") |
+         str_detect(sample_id, "^std(0|50|100|150|250|500|750)$"))
+
+# Calibration and concentration estimation
+d_std <- d_pheno %>% filter(exper_type == "standard")
+d_nonstd <- d_pheno %>% filter(exper_type != "standard")
+
+convert_conc <- function(y, b0, b1) ((y - b0) / b1) * 10
+
+conc_list <- list()
+for (i in unique(d_pheno$date)) {
+  std_i <- d_std %>% filter(date == i)
+  nonstd_i <- d_nonstd %>% filter(date == i)
+  if (nrow(std_i) == 0) next
+
+  m1 <- lm(rep1_absorbance_765_nm ~ tube_number, data = std_i)
+  m2 <- lm(rep2_absorbance_765_nm ~ tube_number, data = std_i)
+  m3 <- lm(rep3_absorbance_765_nm ~ tube_number, data = std_i)
+
+  nonstd_i <- nonstd_i %>% mutate(
+    conc_rep1 = round(convert_conc(rep1_absorbance_765_nm, coef(m1)[1], coef(m1)[2]), 2),
+    conc_rep2 = round(convert_conc(rep2_absorbance_765_nm, coef(m2)[1], coef(m2)[2]), 2),
+    conc_rep3 = round(convert_conc(rep3_absorbance_765_nm, coef(m3)[1], coef(m3)[2]), 2)
+  )
+  conc_list[[as.character(i)]] <- nonstd_i
+}
+
+d_conc <- bind_rows(conc_list) %>%
+  rowwise() %>%
+  mutate(conc_mean = mean(c(conc_rep1, conc_rep2, conc_rep3), na.rm = TRUE)) %>%
+  ungroup()
+```
+
+## Acute Gallic Acid Analysis
+
+```{r gallic-acute-parse}
+# Parse acute sample metadata
+acute_gallic <- d_conc %>%
+  filter(exper_type == "acute", !str_detect(sample_id, "a0")) %>%
+  mutate(
+    acute_code = str_remove(sample_id, "^(st|mq)"),
+    treatment = case_when(
+      str_detect(acute_code, "^a") ~ "A",
+      str_detect(acute_code, "^b") ~ "B",
+      str_detect(acute_code, "^c") ~ "C",
+      str_detect(acute_code, "^d") ~ "D"
+    ),
+    plot_type = if_else(str_detect(acute_code, "c\\d+$"), "Control", "OTC")
+  )
+```
+
+```{r fig-gallic-acute, fig.cap="Figure 5: Gallic acid concentration in the acute experiment by treatment and cultivar. Mullica Queen shows higher concentrations than Stevens. No clear heat treatment effect is visible."}
+acute_gallic %>%
+  ggplot(aes(x = treatment, y = conc_mean, fill = plot_type)) +
+  geom_boxplot() +
+  facet_wrap(~ cultivar) +
+  scale_fill_manual(values = c("Control" = "#0072B2", "OTC" = "#D55E00")) +
+  labs(x = "Heat Treatment", y = "Mean Gallic Acid Concentration",
+       fill = "Plot Type") +
+  theme_minimal() + theme(legend.position = "bottom")
+```
+
+Figure 5 shows that gallic acid concentration varies primarily by cultivar,
+with Mullica Queen consistently higher than Stevens. No clear pattern
+emerges between OTC and control plots.
+
+```{r gallic-acute-model}
+m_gallic_acute <- lm(conc_mean ~ treatment + cultivar + plot_type,
+                     data = acute_gallic)
+ga_coefs <- broom::tidy(m_gallic_acute) %>%
+  mutate(across(where(is.numeric), ~ round(., 3)))
+
+kable(ga_coefs,
+      caption = "Table 4: Acute gallic acid model (additive). Cultivar is the dominant factor.",
+      col.names = c("Term", "Estimate", "Std. Error", "t", "p-value"))
+```
+
+Table 4 confirms that the cultivar effect is statistically discernible:
+Stevens has lower gallic acid concentration than Mullica Queen. The OTC
+treatment effect is not discernible after controlling for cultivar and
+treatment frequency.
+
+## Long-Term Gallic Acid Analysis
+
+```{r gallic-lt}
+lt_map <- tibble(
+  plot_num = as.character(1:16),
+  heat_trt = rep(c("OTC","OTC","OTC","OTC","Control","Control","Control","Control"), 2),
+  set_pair = c(1,2,3,4,1,2,3,4,5,6,7,8,5,6,7,8)
+)
+
+lt_gallic <- d_conc %>%
+  filter(exper_type == "long_term") %>%
+  mutate(plot_num = str_extract(sample_id, "\\d+$")) %>%
+  left_join(lt_map, by = "plot_num") %>%
+  mutate(set_pair = factor(set_pair))
+
+m_gallic_lt <- lm(conc_mean ~ heat_trt + cultivar + set_pair, data = lt_gallic)
+gl_coefs <- broom::tidy(m_gallic_lt) %>%
+  filter(!str_detect(term, "set_pair")) %>%
+  mutate(across(where(is.numeric), ~ round(., 3)))
+
+kable(gl_coefs,
+      caption = "Table 5: Long-term gallic acid model. Cultivar is significant; OTC is not.",
+      col.names = c("Term", "Estimate", "Std. Error", "t", "p-value"))
+```
+
+Consistent with the acute analysis, the long-term model (Table 5) shows a
+strong cultivar effect on gallic acid concentration but no discernible effect
+of long-term OTC heating.
+
+# Temperature and Relative Humidity Analysis
+
+## Scope
+
+We focused on the acute experiment because it produced significant yield
+effects. The long-term experiment showed no significant yield or gallic acid
+effects, so analyzing its temperature data would have limited interpretive
+value given time constraints. We used 4-channel sensors (canopy and fruit
+temperature) as primary and HOBO sensors (temperature and relative humidity)
+as supplementary.
+
+## Temperature Control Effectiveness
+
+```{r temp-load}
+acute_dir <- "cranberry-data/data_acute"
+data_4ch <- read_csv(file.path(acute_dir, "clean_4ch_acute.csv"),
+                     show_col_types = FALSE) %>%
+  mutate(date_time = with_tz(date_time, "America/Chicago"))
+
+data_hobo <- read_csv(file.path(acute_dir, "clean_hobo_acute.csv"),
+                      show_col_types = FALSE) %>%
+  mutate(date_time = with_tz(date_time, "America/Chicago"))
+
+data_canopy <- data_4ch %>% filter(channel == "canopy")
+```
+
+```{r fig-temp-ts, fig.width=10, fig.height=10, fig.cap="Figure 6: Canopy temperature during each acute pulse. OTC plots (orange) are clearly elevated above controls (blue). The red dashed line marks the 40 degree target."}
+data_canopy %>%
+  ggplot(aes(x = date_time, y = temperature, color = plot_type)) +
+  geom_line(aes(group = interaction(set_num, source_file)), alpha = 0.7) +
+  geom_hline(yintercept = 40, linetype = "dashed", color = "red", linewidth = 0.5) +
+  facet_wrap(~ paste(test, cultivar), scales = "free_x", ncol = 2) +
+  scale_color_manual(values = c("OTC" = "#D55E00", "Control" = "#0072B2")) +
+  labs(x = "Time", y = "Canopy Temperature (degrees Celsius)",
+       color = "Plot Type") +
+  theme_minimal(base_size = 9) + theme(legend.position = "bottom")
+```
+
+Figure 6 shows that OTC plots (orange) are consistently elevated above
+control plots (blue) across all acute pulses. Control plots remain at
+20 to 25 degrees Celsius while OTC plots typically oscillate between
+35 and 45 degrees.
+
+```{r temp-metrics}
+# Temperature threshold analysis
+threshold_tbl <- data_canopy %>%
+  filter(plot_type == "OTC") %>%
+  group_by(treatment) %>%
+  summarise(
+    `Mean Temperature` = round(mean(temperature, na.rm = TRUE), 1),
+    `% Time >= 30` = round(mean(temperature >= 30, na.rm = TRUE) * 100, 1),
+    `% Time >= 35` = round(mean(temperature >= 35, na.rm = TRUE) * 100, 1),
+    `% Time >= 40` = round(mean(temperature >= 40, na.rm = TRUE) * 100, 1),
+    .groups = "drop"
+  )
+
+kable(threshold_tbl,
+      caption = "Table 6: OTC temperature thresholds by treatment. All treatments exceed 35 degrees most of the time, despite varying success at reaching 40 degrees.")
+```
+
+Table 6 shows that while only 38% of OTC time reached the 40-degree target,
+about 77% exceeded 35 degrees. This supports a threshold damage model: once
+fruit temperature exceeds approximately 35 degrees, damage occurs regardless
+of pulse count, which explains the absence of a dose-response relationship in
+the yield analysis.
+
+## Canopy versus Fruit Temperature
+
+```{r canopy-fruit}
+temp_wide <- data_4ch %>%
+  pivot_wider(id_cols = c(date_time, set_num, source_file, test, cultivar,
+                          plot, treatment, pulse_num, plot_type, bio_rep),
+              names_from = channel, values_from = temperature) %>%
+  mutate(avg_fruit = rowMeans(select(., fruit1, fruit2, fruit3), na.rm = TRUE)) %>%
+  filter(!is.na(canopy) & !is.na(avg_fruit))
+
+corr_tbl <- temp_wide %>%
+  group_by(`Plot Type` = plot_type) %>%
+  summarise(
+    N = n(),
+    Correlation = round(cor(canopy, avg_fruit, use = "complete.obs"), 3),
+    `Mean Canopy` = round(mean(canopy, na.rm = TRUE), 1),
+    `Mean Fruit` = round(mean(avg_fruit, na.rm = TRUE), 1),
+    .groups = "drop"
+  )
+
+kable(corr_tbl,
+      caption = "Table 7: Canopy versus fruit temperature. Fruit temperatures are slightly higher than canopy temperatures, especially in OTC plots.")
+```
+
+Table 7 shows that fruit temperatures average about 1 degree higher than
+canopy temperatures in OTC plots (39.5 versus 38.4 degrees). The lower
+correlation in OTC (0.62 versus 0.85 in controls) indicates that heating
+creates more heterogeneous conditions within the chamber. This suggests that
+canopy-based temperature measurements may underestimate actual fruit heat
+exposure.
+
+## Relative Humidity
+
+```{r fig-rh, fig.cap="Figure 7: Relative humidity by treatment and plot type. OTC plots have substantially lower and more variable humidity."}
+data_hobo %>%
+  ggplot(aes(x = treatment, y = rh, fill = plot_type)) +
+  geom_boxplot(alpha = 0.7) +
+  facet_wrap(~ cultivar) +
+  scale_fill_manual(values = c("Control" = "#0072B2", "OTC" = "#D55E00")) +
+  labs(x = "Treatment", y = "Relative Humidity (%)",
+       fill = "Plot Type") +
+  theme_minimal() + theme(legend.position = "bottom")
+```
+
+Figure 7 shows that OTC plots have substantially lower relative humidity
+than control plots. The combination of elevated temperature (approximately
+38 degrees) and reduced humidity creates conditions that may accelerate
+fruit tissue breakdown, helping explain the 3.8-fold increase in rotten fruit
+odds found in the yield analysis.
+
+# Conclusions and Limitations
+
+## Key Findings
+
+1. **Long-term OTC warming did not significantly affect yield or gallic acid.**
+   Cultivar was the dominant factor: Mullica Queen produces approximately
+   280 grams more healthy fruit and has higher gallic acid concentration
+   than Stevens.
+
+2. **Acute heat pulses significantly reduced yield.** OTC reduced healthy
+   fruit weight by 155 grams (approximately 15%) and increased the odds
+   of fruit rot by 3.8 times.
+
+3. **No dose-response between pulse frequency and yield.** One two-hour
+   pulse caused the same damage as four pulses, suggesting a threshold
+   damage mechanism. Temperature data confirmed that OTC time above
+   35 degrees was similar across all treatments.
+
+4. **Temperature confirms the mechanism.** OTC raised fruit temperature by
+   approximately 16 degrees above controls. Higher actual fruit temperature
+   was associated with lower yield. OTC also reduced relative humidity,
+   creating a hotter and drier environment that may contribute to increased
+   rot.
+
+5. **Heat did not discernibly affect gallic acid concentration** in either
+   experiment. Cultivar is the primary driver of gallic acid variation.
+
+## Limitations
+
+- **Small sample sizes** (4 replicates per group in long-term, 3 in acute)
+  limit statistical power, particularly for detecting smaller effects or
+  differences between treatment frequencies.
+- **Temperature and humidity are confounded** in the OTC design: heating
+  simultaneously raises temperature and lowers humidity, so we cannot
+  fully separate their individual contributions to fruit rot.
+- **Temperature scope**: we only analyzed acute experiment temperature data.
+  Long-term temperature data was not processed due to the complexity of
+  redundant downloads and thermocouple failures, and because long-term
+  yield showed no significant effect.
+- **Missing sensor data**: HOBO files are absent for tests D1 and A4.
+
+## Future Directions
+
+- Increase the number of biological replicates to improve statistical power.
+- Analyze long-term temperature data to verify whether OTC chambers
+  effectively raised temperature over the growing season.
+- Investigate the separate effects of temperature and humidity on fruit
+  quality using controlled environment experiments.
