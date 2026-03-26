@@ -1,0 +1,281 @@
+---
+title: "Mod_2_clean_3.19"
+author: "Group 5"
+date: "`r lubridate::today()`"
+format: 
+  html: 
+    embed-resources: true
+    toc: true 
+    toc_depth: 4
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r, include = FALSE}
+#libraries
+library(tidyverse)
+library(tidymodels)
+library(ggplot2)
+library(skimr)
+library(lme4)
+library(car, exclude = c("recode", "some"))
+library(kableExtra, exclude = "group_rows")
+library(lmerTest)
+library(dplyr)
+library(broom)
+library(tibble)
+
+```
+
+
+```{r, include = FALSE}
+#Load Data, skim and clean
+
+#Phenolics_raw data
+d_pheno <- readxl::read_xlsx(
+  here::here("cranberry-data/cranberry-data/data_mixed/", "Phenolics_RawData.xlsx")) |> 
+  janitor::clean_names() |> 
+  glimpse()
+
+#all values will now be lowercase in the sample_id column
+d_pheno <- d_pheno |> 
+  mutate(across(where(is.character),tolower))
+
+skim(d_pheno)
+
+
+d_pheno <- d_pheno |> 
+  mutate(exper_type = if_else(str_detect(sample_id, "^std(0|50|100|150|250|500|750)$"), "standard", "acute"), 
+         exper_type = if_else(str_detect(sample_id, "lt"), "long_term", exper_type)
+         #Create a experiment type variable of either long term, standard, or acute based on sample id
+         )
+
+#create a row for plot number of long term experiment
+d_pheno <- d_pheno |> 
+  mutate(plot_num_lt = as.integer(if_else(str_detect(sample_id, "lt"), str_extract(sample_id, "\\d+$"), NA)),
+         bio_replicate = if_else(exper_type == "acute", str_extract(sample_id, "\\d+$"), NA),
+          #edit later for ignoring a0
+         heat_condition = if_else(exper_type == "acute",str_sub(sample_id, 3, 3), NA),
+         control_patch = if_else(exper_type == "acute" & str_sub(sample_id, 4, 4) == "c", 1, 0),
+         control_patch = if_else((plot_num_lt %in% c(5,6,7,8,13,14,15,16)) & 
+                                   exper_type == "long_term", 1, control_patch),
+    cultiver = if_else(exper_type != "standard", str_sub(sample_id, 1,2), NA)
+  )
+
+
+```
+
+
+```{r, include = FALSE}
+#Run model to find concentrations
+d_pheno_date <- d_pheno |> 
+  mutate(date = as.character(date), 
+         date = str_sub(date, -2), 
+         date = as.numeric(date))
+
+d_pheno_conc <- list()
+
+for (i in unique(d_pheno_date$date)) {
+
+  # --- standard data for this date ---
+  std <- d_pheno_date |>
+    filter(date == i, exper_type == "standard")
+
+  # --- treatment data for this date ---
+  treat <- d_pheno_date |>
+    filter(date == i, exper_type != "standard")
+
+  # --- fit 3 separate models ---
+  m1 <- lm(rep1_absorbance_765_nm ~ tube_number, data = std)
+  m2 <- lm(rep2_absorbance_765_nm ~ tube_number, data = std)
+  m3 <- lm(rep3_absorbance_765_nm ~ tube_number, data = std)
+
+  # extract intercept + slope for each model
+  b01 <- tidy(m1)$estimate[1]; b11 <- tidy(m1)$estimate[2]
+  b02 <- tidy(m2)$estimate[1]; b12 <- tidy(m2)$estimate[2]
+  b03 <- tidy(m3)$estimate[1]; b13 <- tidy(m3)$estimate[2]
+
+  # conversion helper
+  convert <- function(x, b0, b1) round((x - b0) / b1, 2)
+
+  # --- compute concentrations for all 3 reps ---
+  treat_conc <- treat |>
+    mutate(
+      rep1_conc = convert(rep1_absorbance_765_nm, b01, b11)*10,
+      rep2_conc = convert(rep2_absorbance_765_nm, b02, b12)*10,
+      rep3_conc = convert(rep3_absorbance_765_nm, b03, b13)*10
+    )
+
+  d_pheno_conc[[as.character(i)]] <- treat_conc
+}
+
+# combine all dates
+d_pheno_conc <- bind_rows(d_pheno_conc)
+
+
+```
+
+# split into longterm and accute experiments
+```{r, include = FALSE}
+#| include: false
+d_pheno_conc <- d_pheno_conc |> filter(!str_detect(sample_id, "a0")) |> 
+  mutate(conc_mean = (rep1_conc+rep2_conc+rep3_conc)/3)
+
+lt_pheno <- d_pheno_conc |> 
+  select(plot_num_lt, cultiver, control_patch, conc_mean, exper_type) |> 
+  filter(exper_type == "long_term") |> 
+  mutate(set = recode_values(plot_num_lt, 
+                            1~ 7,
+                            5 ~ 7, 
+                            2~ 8,
+                            6~8,
+                            3~ 9,
+                            7~9,
+                            8~10,
+                            4~10,
+                            9~11,
+                            13~11,
+                            10~12,
+                            14~12,
+                            15~13,
+                            11~13,
+                            12~14,
+                            16~14))
+
+
+```
+
+```{r echo=FALSE}
+#| message: false
+#| warning: false
+m_lt <- lmer(
+  conc_mean ~ control_patch + cultiver + (1|set),
+  data = lt_pheno
+)
+
+lt_sum <- broom.mixed::tidy(m_lt, effects = "fixed", conf.int = FALSE) |> mutate(across(where(is.numeric), ~round(.x,3))) |> select(-effect) |> mutate(term = recode(term, 
+                       "(Intercept)" = "Intercept", 
+                       "cultiverst" = "Cultivar", 
+"control_patch" = "Control Patch", "cultiver" = "Cultiver"))
+
+lt_sum |> as.data.frame() |> kbl( 
+    caption ="LONG TERM: PHENOLIC DATA REGRESSION COEFFICIENTS", booktabs = TRUE) |> 
+  kable_classic(full_width = FALSE, html_font = "Calibri") |> 
+  row_spec(0, bold = TRUE)
+
+lt_anova <- Anova(m_lt, "3", "F") |>  mutate(across(where(is.numeric), ~round(.x,3))) |> 
+  rownames_to_column("term") |> 
+  mutate(term = recode(term, 
+                       "(Intercept)" = "Intercept", 
+                       "control_patch" = "Control Patch", "cultiver" = "Cultivar"))
+
+lt_anova |> as.data.frame() |> kbl( 
+    caption ="LONG TERM PHENOLIC DATA ANOVA", booktabs = TRUE) |> 
+  kable_classic(full_width = FALSE, html_font = "Calibri") |> 
+  row_spec(0, bold = TRUE)
+
+
+ggplot(lt_pheno, aes(x = cultiver, y = conc_mean, fill = cultiver)) +
+  geom_boxplot(alpha = 0.7) +
+  geom_jitter(aes(color = cultiver), position = position_jitterdodge(jitter.width = 0.1),
+              size = 1.5) +
+  facet_wrap(~ control_patch, 
+             labeller = labeller(
+               control_patch = c(
+                 "0" = "Treatment",
+                 "1" = "Control"
+               )))+
+  scale_x_discrete(
+    labels = c(
+      mq = "Molluca \nQueen",
+      st = "Stevens"
+    )
+  ) +
+  labs(title = "Long-term: Gallic Acid Concentrations by Treatment",
+       x = "Cultiver", y = "Gallic Acid Concentration") +
+  theme_minimal() + theme(legend.position = "none")
+
+```
+
+# acute heat experiment
+```{r, include = FALSE}
+
+acute_pheno <- d_pheno_conc |> 
+  filter(exper_type == "acute") 
+
+acute_pheno <- acute_pheno %>%
+  mutate(
+    # create a grouping key for each within-subject pair
+    set_key = paste(cultiver, bio_replicate, heat_condition, sep = "_")
+  ) %>%
+  group_by(set_key) %>%
+  mutate(
+    set_id = cur_group_id()
+  ) %>%
+  ungroup() %>%
+  select(-set_key)
+
+
+m_acute <- lmer(conc_mean ~ heat_condition + cultiver + bio_replicate + control_patch +
+                  (1 + control_patch|set_id), data = acute_pheno)
+
+acute_sum <- broom.mixed::tidy(m_acute, effects = "fixed", conf.int = FALSE) |> mutate(across(where(is.numeric), ~round(.x,3))) |> select(-effect) |> 
+  mutate(term = recode(term, 
+                       "(Intercept)" = "Intercept", 
+                       "heat_conditionb" = "Heat Condition B", 
+                       "heat_conditionc" = "Heat Condition C", 
+                       "heat_conditiond" = "Heat Condition D", 
+                       "cultiverst" = "Cultivar", 
+                       "bio_replicate2" = "Biological Replicate 2", 
+                       "bio_replicate3" = "Biological Replicate 3", "control_patch" = "Control Patch", 
+                       "cultiver" = "Cultivar"))
+
+```
+
+# Table for acute heat
+```{r, echo = FALSE}
+
+acute_sum |> as.data.frame() |> kbl( 
+    caption ="Table 1. PHENOLIC DATA REGRESSION COEFFICIENTS", booktabs = TRUE) |> 
+  kable_classic(full_width = FALSE, html_font = "Calibri") |> 
+  row_spec(0, bold = TRUE)
+
+
+acute_anova <- Anova(m_acute, "3", "F") |> mutate(across(where(is.numeric), ~round(.x,3))) |> 
+  rownames_to_column("term") |> 
+  mutate(term = recode(term, 
+                       "(Intercept)" = "Intercept", 
+                       "heat_condition" = "Heat Condition", 
+                       "bio_replicate" = "Biological Replicate",
+                       "control_patch" = "Control Patch", "cultiver" = "Cultivar"))
+
+acute_anova |> as.data.frame() |> kbl( 
+    caption ="Table 2. PHENOLIC DATA ANOVA", booktabs = TRUE) |> 
+  kable_classic(full_width = FALSE, html_font = "Calibri") |> 
+  row_spec(0, bold = TRUE)
+
+
+```
+
+```{r} {echo = FALSE}
+# graph acute heat
+# Healthy weight by treatment, split by OTC/Control and cultivar
+ggplot(acute_pheno, aes(x = heat_condition, y = conc_mean, fill = cultiver)) +
+  geom_boxplot(alpha = 0.7) +
+  geom_jitter(aes(color = cultiver), position = position_jitterdodge(jitter.width = 0.1),
+              size = 1.5) +
+  facet_wrap(~ control_patch, 
+             labeller = labeller(
+               control_patch = c(
+                 "0" = "Treatment",
+                 "1" = "Control"
+               ))
+             ) +
+  labs(title = "Acute: Gallic Acid by Treatment",
+       x = "Treatment (A=4, B=3, C=2, D=1 pulse)", y = "Gallic Acid Concentration") +
+  
+  theme_minimal() + theme(legend.position = "bottom")
+
+
+
+```
