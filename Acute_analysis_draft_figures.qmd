@@ -1,0 +1,484 @@
+---
+title: "Mod_2_clean_3.19"
+author: "Group 5"
+date: "`r lubridate::today()`"
+
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE,
+                      fig.width = 8, fig.height = 5)
+```
+
+# 1 Scope Definition
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(lubridate)
+library(kableExtra)
+library(car, exclude = "recode")
+```
+
+**Experiment**: Acute heat only. The long-term yield analysis showed no significant OTC effect, so analyzing long-term temperature data would have limited interpretive value. The acute experiment showed highly significant yield effects (OTC reduced healthy weight by 155g, p=0.001), making temperature data essential for understanding the mechanism.
+
+**Sensors**: 4-Channel (primary) provides canopy + 3 fruit temperatures, directly measuring the heat exposure that caused yield loss. HOBO (supplementary) provides relative humidity, which may help explain why OTC increased rotten fruit odds by 3.8x.
+
+**Time window**: 2-hour pulse periods only (pruned during cleaning).
+
+**Plots**: All OTC + Control pairs retained.
+
+```{r load-data}
+acute_dir <- "stat628Module2Group5"
+
+data_4ch <- read_csv(here::here( acute_dir,"clean_4ch_acute.csv"),
+                     show_col_types = FALSE) %>%
+  mutate(date_time = with_tz(date_time, "America/Chicago"),
+         pulse_id = paste(test, cultivar, sep = "_"))
+
+data_hobo <- read_csv(here::here(acute_dir, "clean_hobo_acute.csv"),
+                      show_col_types = FALSE) %>%
+  mutate(date_time = with_tz(date_time, "America/Chicago"),
+         pulse_id = paste(test, cultivar, sep = "_"))
+
+data_4ch_canopy <- data_4ch %>% filter(channel == "canopy")
+
+cat("4-Channel rows:", nrow(data_4ch), "\n")
+cat("HOBO rows:", nrow(data_hobo), "\n")
+```
+
+# 2 Temperature Control Effectiveness
+
+This section addresses: "How well did the intention to raise and keep the temperature at 40C in the OTC plots work?" This directly supports Yield Finding 1 (OTC reduced yield by 155g).
+
+## 2.1 Time Series: OTC vs Control
+
+```{r ts-all, fig.width=10, fig.height=15}
+data_4ch_canopy %>%
+  ggplot(aes(x = date_time, y = temperature, color = plot_type)) +
+  geom_line(aes(group = interaction(set_num, source_file)), alpha = 0.7) +
+  geom_hline(yintercept = 40, linetype = "dashed", color = "red", linewidth = 0.5) +
+  facet_wrap(~ paste(test, cultivar), scales = "free_x", ncol = 2) +
+  scale_color_manual(values = c("OTC" = "#D55E00", "Control" = "#0072B2")) +
+  labs(title = "Canopy Temperature During Each Pulse: OTC vs Control",
+       subtitle = "Red dashed = 40C target",
+       x = "Time", y = "Temperature (C)", color = "Plot Type") +
+  theme_minimal(base_size = 15) +
+  theme(legend.position = "bottom")
+
+
+```
+
+OTC temperatures (orange) are clearly elevated above Control (blue) in every pulse. Most OTC traces oscillate around 35-45C while Controls stay at 20-25C. The 40C target is reached in many but not all pulses.
+
+## 2.2 Control Performance Metrics
+
+```{r control-metrics}
+# Per-pulse OTC metrics
+control_metrics <- data_4ch_canopy %>%
+  filter(plot_type == "OTC") %>%
+  group_by(pulse_id, test, treatment, pulse_num, cultivar, bio_rep) %>%
+  summarise(
+    n_obs = n(),
+    mean_temp = mean(temperature, na.rm = TRUE),
+    max_temp = max(temperature, na.rm = TRUE),
+    pct_above_40 = mean(temperature >= 40, na.rm = TRUE) * 100,
+    pct_above_35 = mean(temperature >= 35, na.rm = TRUE) * 100,
+    first_time = min(date_time),
+    first_40 = suppressWarnings(min(date_time[temperature >= 40])),
+    time_to_40_min = as.numeric(difftime(first_40, first_time, units = "mins")),
+    .groups = "drop"
+  )
+
+# Summary by treatment
+control_summary <- control_metrics %>%
+  group_by(treatment, cultivar) %>%
+  summarise(
+    n = n(),
+    avg_temp = round(mean(mean_temp), 1),
+    avg_pct_40 = round(mean(pct_above_40), 1),
+    avg_pct_35 = round(mean(pct_above_35), 1),
+    .groups = "drop"
+  ) 
+
+control_summary |>   rename(
+    Treatment      = treatment,
+    Cultivar       = cultivar,
+    N              = n,
+    `Mean Temp (C)` = avg_temp,
+    `% >= 40C`     = avg_pct_40,
+    `% >= 35C`     = avg_pct_35
+  )|> as.data.frame() |> kbl( 
+    caption ="OTC Temperature Control by Treatment", booktabs = TRUE) |> 
+  kable_classic(full_width = FALSE, html_font = "Calibri") |> 
+  row_spec(0, bold = TRUE) 
+
+
+# knitr::kable(control_summary,
+#              col.names = c("Treatment", "Cultivar", "N",
+#                            "Mean Temp (C)", "% >= 40C", "% >= 35C"),
+#              caption = "OTC Temperature Control by Treatment")
+```
+
+OTC successfully raised temperatures far above Control, but only 38% of time reached the 40C target. However, 63% of time exceeded 35C. This is important because yield analysis showed treatment frequency (A/B/C/D) had no effect -- suggesting damage occurs at temperatures well below 40C.
+
+## 2.3 Boxplot: OTC vs Control by Treatment
+
+```{r boxplot, fig.width=9, fig.height=5}
+data_4ch_canopy %>%
+  ggplot(aes(x = interaction(treatment, plot_type), y = temperature,
+             fill = plot_type)) +
+  geom_boxplot(outlier.size = 0.5, alpha = 0.8) +
+  geom_hline(yintercept = 40, linetype = "dashed", color = "red") +
+  facet_wrap(~ cultivar) +
+  scale_fill_manual(values = c("OTC" = "#D55E00", "Control" = "#0072B2"),
+                    name = "Plot Type") +
+  scale_x_discrete(labels = c("A", "B", "C", "D", "A", "B", "C", "D")) +
+  labs(title = "Canopy Temperature: OTC vs Control by Treatment",
+       x = "Heat Condition", y = "Temperature (C)") +
+  theme_minimal(base_size = 14) + theme(legend.position = "bottom")
+```
+
+The temperature distributions confirm a massive OTC-Control gap regardless of treatment. Control medians are stable at \~22C while OTC medians range from 36-42C. The overlap between treatments within OTC is large, consistent with yield showing no dose-response pattern.
+
+# 3 OTC vs Control Temperature Difference
+
+```{r temp-diff}
+# Paired mean temperatures per pulse
+pulse_means <- data_4ch_canopy %>%
+  group_by(test, treatment, pulse_num, cultivar, plot_type, bio_rep) %>%
+  summarise(mean_temp = mean(temperature, na.rm = TRUE), .groups = "drop")
+
+temp_diff <- pulse_means %>%
+  pivot_wider(names_from = plot_type, values_from = mean_temp) %>%
+  mutate(diff = OTC - Control)
+
+# knitr::kable(
+#   temp_diff %>%
+#     group_by(treatment, cultivar) %>%
+#     summarise(n = n(), mean_diff = round(mean(diff, na.rm = TRUE), 1),
+#               sd = round(sd(diff, na.rm = TRUE), 1), .groups = "drop"),
+#   col.names = c("Treatment", "Cultivar", "N", "Mean Diff (C)", "SD"),
+#   caption = "OTC - Control Temperature Difference")
+
+temp_diff %>%
+    group_by(treatment, cultivar) %>%
+    summarise(n = n(), mean_diff = round(mean(diff, na.rm = TRUE), 1),
+              sd = round(sd(diff, na.rm = TRUE), 1), .groups = "drop")|>
+  rename(
+    Treatment      = treatment,
+    Cultivar       = cultivar,
+    N              = n,
+    `Mean Diff (C)` = mean_diff,
+    `SD`     = sd
+  )|>
+  as.data.frame() |> 
+  kbl( 
+    caption ="OTC - Control Temperature Difference", booktabs = TRUE) |> 
+  kable_classic(full_width = FALSE, html_font = "Calibri") |> 
+  row_spec(0, bold = TRUE)
+```
+
+OTC plots are consistently 14-18C warmer than Control. This large, robust temperature difference confirms that the OTC heating system created the thermal stress conditions that caused the 155g yield reduction and 3.8x increase in rotten odds found in the yield analysis.
+
+# 4 Canopy vs Fruit Temperature
+
+```{r canopy-fruit-prep}
+# Wide format with canopy and avg fruit
+temp_wide <- data_4ch %>%
+  pivot_wider(
+    id_cols = c(date_time, set_num, source_file, test, cultivar, plot,
+                treatment, pulse_num, plot_type, bio_rep, pulse_id),
+    names_from = channel, values_from = temperature
+  ) %>%
+  mutate(avg_fruit = rowMeans(select(., fruit1, fruit2, fruit3), na.rm = TRUE)) %>%
+  filter(!is.na(canopy) & !is.na(avg_fruit))
+```
+
+```{r canopy-fruit-scatter, fig.width=8, fig.height=5}
+ggplot(temp_wide, aes(x = canopy, y = avg_fruit, color = plot_type)) +
+  geom_point(alpha = 0.15, size = 0.8) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray50") +
+  facet_wrap(~ cultivar) +
+  scale_color_manual(values = c("OTC" = "#D55E00", "Control" = "#0072B2"),
+                     name = "Plot Type"
+                     ) +
+  labs(title = "Canopy vs Average Fruit Temperature",
+       subtitle = "Dashed = 1:1 line",
+       x = "Canopy Temp (C)", y = "Avg Fruit Temp (C)") +
+  theme_minimal(base_size = 14) + theme(legend.position = "bottom")+ guides(
+    color = guide_legend(
+      override.aes = list(alpha = 0.5 , size = 3)
+    )
+  )
+```
+
+```{r canopy-fruit-corr}
+corr_tbl <- temp_wide %>%
+  group_by(plot_type, cultivar) %>%
+  summarise(n = n(),
+            corr = round(cor(canopy, avg_fruit, use = "complete.obs"), 3),
+            mean_canopy = round(mean(canopy, na.rm = TRUE), 1),
+            mean_fruit = round(mean(avg_fruit, na.rm = TRUE), 1),
+            .groups = "drop")  
+
+corr_tbl |> as.data.frame() |> 
+  kbl( 
+    caption ="Canopy vs Fruit Temperature", booktabs = TRUE,
+    col.names = c("Plot", "Cultivar", "N", "Corr",
+                           "Mean Canopy", "Mean Fruit")) |> 
+  kable_classic(full_width = FALSE, html_font = "Calibri") |> 
+  row_spec(0, bold = TRUE)
+
+# knitr::kable(corr_tbl,
+#              col.names = c("Plot", "Cultivar", "N", "Corr",
+#                            "Mean Canopy", "Mean Fruit"),
+#              caption = "Canopy vs Fruit Temperature")
+```
+
+Fruit temperatures are \~1C higher than canopy in OTC plots (39.5 vs 38.4C). This means fruit heat exposure may be underestimated by canopy sensors alone. The lower correlation in OTC (0.62 vs 0.85) suggests heating creates more heterogeneous conditions within the chamber.
+
+# 5 Relative Humidity (HOBO)
+
+This section supports Yield Finding 2: OTC increased rotten odds by 3.8x. The hypothesis is that OTC heating reduces relative humidity, creating a high-temperature + low-humidity environment that damages fruit tissue.
+
+```{r rh-comparison}
+# Mean RH per pulse: OTC vs Control
+rh_summary <- data_hobo %>%
+  group_by(treatment, cultivar, plot_type) %>%
+  summarise(mean_rh = round(mean(rh, na.rm = TRUE), 1),
+            sd_rh = round(sd(rh, na.rm = TRUE), 1),
+            .groups = "drop") |> pivot_wider(names_from = plot_type,
+                              values_from = c(mean_rh, sd_rh))
+
+rh_summary |> as.data.frame() |> 
+  kbl( 
+    caption ="Mean Relative Humidity: OTC vs Control (HOBO)", booktabs = TRUE,
+    col.names = c("Treatment", "Cultivar", "Mean Control", "Mean OTC",
+                           "SD Control", "SD OTC")) |> 
+  kable_classic(full_width = FALSE, html_font = "Calibri") |> 
+  row_spec(0, bold = TRUE)
+
+
+```
+
+```{r rh-boxplot, fig.height=4}
+data_hobo %>%
+  ggplot(aes(x = treatment, y = rh, fill = plot_type)) +
+  geom_boxplot(alpha = 0.7) +
+  facet_wrap(~ cultivar) +
+  scale_fill_manual(values = c("Control" = "#0072B2", "OTC" = "#D55E00"),
+                    name = "Plot Type") +
+  labs(title = "Relative Humidity: OTC vs Control",
+       x = "Treatment", y = "RH (%)") +
+  theme_minimal() + theme(legend.position = "bottom")
+```
+
+OTC plots show substantially lower and more variable RH compared to Control. The combination of elevated temperature (\~38C) and reduced humidity creates conditions that accelerate fruit tissue breakdown, helping explain why OTC plots had 3.8x higher odds of rotten fruit in the yield analysis.
+
+# 6 Temperature Variation Across Treatments
+
+This section supports Yield Finding 3: no dose-response relationship between treatment frequency and yield. We examine whether the actual temperature exposure differs across treatments.
+
+```{r treatment-comparison, fig.height=4}
+data_4ch_canopy %>%
+  filter(plot_type == "OTC") %>%
+  ggplot(aes(x = treatment, y = temperature, fill = treatment)) +
+  geom_boxplot(alpha = 0.7) +
+  geom_hline(yintercept = 40, linetype = "dashed", linewidth = 1, color = "red") +
+  geom_hline(yintercept = 35, linetype = "dotted",linewidth = 1, color = "red") +
+  facet_wrap(~ cultivar) +
+  labs(title = "OTC Temperature Distribution by Treatment",
+       subtitle = "Dashed = 40C target, dotted = 35C threshold",
+       x = "Treatment", y = "Temperature (C)") +
+  theme_minimal() + theme(legend.position = "none")
+```
+
+```{r threshold-analysis}
+# What fraction of time is above various thresholds?
+threshold_tbl <- data_4ch_canopy %>%
+  filter(plot_type == "OTC") %>%
+  group_by(treatment) %>%
+  summarise(
+    mean_temp = round(mean(temperature, na.rm = TRUE), 1),
+    pct_30 = round(mean(temperature >= 30, na.rm = TRUE) * 100, 1),
+    pct_35 = round(mean(temperature >= 35, na.rm = TRUE) * 100, 1),
+    pct_40 = round(mean(temperature >= 40, na.rm = TRUE) * 100, 1),
+    .groups = "drop"
+  )
+threshold_tbl |> as.data.frame() |> kbl( 
+    caption ="OTC Temperature Thresholds by Treatment", booktabs = TRUE, 
+    col.names = c("Treatment", "Mean (C)",
+                           "% >= 30C", "% >= 35C", "% >= 40C")) |> 
+  kable_classic(full_width = FALSE, html_font = "Calibri") |> 
+  row_spec(0, bold = TRUE)
+# knitr::kable(threshold_tbl,
+#              col.names = c("Treatment", "Mean (C)",
+#                            "% >= 30C", "% >= 35C", "% >= 40C"),
+#              caption = "OTC Temperature Thresholds by Treatment")
+```
+
+All four treatments achieve similar temperature ranges (mean 37-41C). Even Treatment B, which had the lowest % time at 40C (29%), still spent 68% of time above 35C. This supports a threshold damage model: once temperature exceeds \~35C, fruit damage occurs regardless of how many times or how long the exposure lasts. This explains why yield showed no dose-response (A=B=C=D).
+
+# 7 Temperature as Yield Predictor
+
+This section directly links temperature data to yield outcomes, testing whether actual measured temperature (not just OTC/Control label) predicts yield.
+
+```{r load-yield-for-temp}
+# Load yield data
+yield_raw <- read_excel(here::here("cranberry-data/cranberry-data/data_acute","Acute HS-Yield_RawData 2024.xlsx"),
+                        sheet = "Acute Heat stress", skip = 4)
+
+yield <- yield_raw %>%
+  select(cultivar = Cultivar, trt_string = Treatment,
+         bio_rep = `# OTC/ plot`,
+         rotten_count = `Rotten fruit #`,
+         healthy_count = `Non-rotten fruit#`,
+         healthy_weight = `Non-rotten fruitWeight (g)`,
+         rotten_weight = `Rotten fruitWeight (g)`,
+         total_weight = `Total Weight (g)`) %>%
+  filter(!is.na(trt_string), !str_detect(trt_string, "A0")) %>%
+  mutate(is_control = nchar(trt_string) >= 2 & str_detect(trt_string, "C$"),
+         treatment = str_extract(trt_string, "^[A-D]"),
+         plot_type = if_else(is_control, "Control", "OTC"),
+         bio_rep = as.integer(bio_rep),
+         pct_rotten_wt = rotten_weight / total_weight * 100)
+```
+
+```{r compute-fruit-temp}
+# Compute mean FRUIT temperature per (treatment, cultivar, plot_type, bio_rep)
+fruit_summary <- data_4ch %>%
+  filter(channel != "canopy") %>%
+  group_by(treatment, cultivar, plot_type, bio_rep) %>%
+  summarise(mean_fruit_temp = round(mean(temperature, na.rm = TRUE), 2),
+            .groups = "drop") |> mutate(cultivar = recode(cultivar, 
+                               "Stevens" = "St"))
+
+# Compute mean RH per (treatment, cultivar, plot_type, bio_rep)
+rh_per_plot <- data_hobo %>%
+  group_by(treatment, cultivar, plot_type, bio_rep) %>%
+  summarise(mean_rh = round(mean(rh, na.rm = TRUE), 2),
+            .groups = "drop") |> mutate(cultivar = recode(cultivar, 
+                               "Stevens" = "St"))
+
+# Merge all
+yield_temp <- yield |> 
+  left_join(fruit_summary, by = c("treatment", "cultivar", "plot_type", "bio_rep")) %>%
+  left_join(rh_per_plot, by = c("treatment", "cultivar", "plot_type", "bio_rep"))
+
+cat("Matched with fruit temp:", sum(!is.na(yield_temp$mean_fruit_temp)),
+    "/ ", nrow(yield_temp), "\n")
+cat("Matched with RH:", sum(!is.na(yield_temp$mean_rh)),
+    "/", nrow(yield_temp), "\n")
+```
+
+## 7.1 Fruit Temperature vs Healthy Weight
+
+```{r fruit-temp-yield, fig.height=5}
+yield_temp %>%
+  filter(!is.na(mean_fruit_temp)) %>%
+  ggplot(aes(x = mean_fruit_temp, y = healthy_weight,
+             color = plot_type, shape = cultivar)) +
+  geom_point(size = 3) +
+  geom_smooth(method = "lm", se = FALSE, aes(group = 1),
+              color = "black", linetype = "dashed") +
+  scale_color_manual(values = c("OTC" = "#D55E00", "Control" = "#0072B2"),
+                     name = "Plot Type") +
+  labs(title = "Mean Fruit Temperature vs Healthy Weight",
+       x = "Mean Fruit Temp (C)", y = "Healthy Weight (g)", shape = "Cultivar") +
+  theme_minimal() + theme(legend.position = "bottom")
+```
+
+```{r model-temp-yield}
+# Regression: does fruit temperature predict yield?
+yt <- yield_temp %>% filter(!is.na(mean_fruit_temp))
+
+if (nrow(yt) >= 5) {
+  preds <- "mean_fruit_temp"
+  if (n_distinct(yt$cultivar) > 1) preds <- paste(preds, "+ cultivar")
+  f <- as.formula(paste("healthy_weight ~", preds))
+  m_temp <- lm(f, data = yt)
+
+}
+
+m_temp |> broom::tidy() |> mutate(term = recode(term,
+                                                "(Intercept)" = "Intercept", 
+                                                "mean_fruit_temp" = "Mean Fruit Temp", 
+                                                "cultivarSt" = "Cultivar"),
+                                  across(where(is.numeric), ~round(.x,3))) |> 
+                                  as.data.frame() |> kbl( 
+    caption ="TEMEPRATURE DATA REGRESSION COEFFICIENTS", booktabs = TRUE,
+        col.names = c("term", "Estimate", "STD.Error", "Statistic", "P.Value")) |> 
+  kable_classic(full_width = FALSE, html_font = "Calibri") |> 
+  row_spec(0, bold = TRUE)
+```
+
+If fruit temperature significantly predicts healthy weight (negative coefficient), this confirms that the actual thermal exposure -- not merely the OTC label -- drives yield loss.
+
+## 7.2 Temperature + RH vs Rotten Rate
+
+```{r model-temp-rotten}
+# Does adding RH help explain rotten rate?
+yt_rh <- yield_temp %>% filter(!is.na(mean_fruit_temp), !is.na(mean_rh))
+
+if (nrow(yt_rh) >= 5) {
+  preds2 <- "mean_fruit_temp + mean_rh"
+  if (n_distinct(yt_rh$cultivar) > 1) preds2 <- paste(preds2, "+ cultivar")
+  f2 <- as.formula(paste("cbind(rotten_count, healthy_count) ~", preds2))
+  m_rot_temp <- glm(f2, family = quasibinomial, data = yt_rh)
+}
+
+m_rot_temp |> broom::tidy()|> mutate(term = recode(term,
+                                                "(Intercept)" = "Intercept", 
+                                                "mean_fruit_temp" = "Mean Fruit Temp", 
+                        "mean_rh" = "Mean Relative\n Humidity",
+                                                "cultivarSt" = "Cultivar"),
+                                  across(where(is.numeric), ~round(.x,3))) |> 
+                                  as.data.frame() |> kbl( 
+    caption ="RELATIVE HUMIDITY AND TEMPERATURE REGERSSION COEFFICIENTS", booktabs = TRUE,
+        col.names = c("term", "Estimate", "STD.Error", "Statistic", "P.Value")) |> 
+  kable_classic(full_width = FALSE, html_font = "Calibri") |> 
+  row_spec(0, bold = TRUE)
+
+
+rh_t_anova <- Anova(m_rot_temp, 3, "F") |> 
+  mutate(across(where(is.numeric), ~round(.x,3)))|> 
+  rownames_to_column("term")
+
+rh_t_anova <- rh_t_anova |> mutate(term = recode_values(term, "mean_fruit_temp" ~ "Mean Fruit Temp", 
+                       "mean_rh" ~ "Mean Relative Humidity", 
+                       "cultivar" ~ "Cultivar",
+                       "Residuals" ~"Residuals"))
+
+rh_t_anova |> as.data.frame() |> kbl(caption ="RELATIVE HUMIDITY AND TEMPERATURE ANOVA TABLE", booktabs = TRUE) |> 
+  kable_classic(full_width = FALSE, html_font = "Calibri") |> 
+  row_spec(0, bold = TRUE)
+  
+
+
+```
+
+This model tests whether the combination of high temperature and low humidity explains rotten fruit probability, consistent with the hypothesis that OTC created a damaging high-heat, low-moisture environment.
+
+# 8 Summary
+
+```{r summary, echo=FALSE}
+otc_stats <- data_4ch_canopy %>% filter(plot_type == "OTC") %>%
+  summarise(m = round(mean(temperature, na.rm = TRUE), 1),
+            p40 = round(mean(temperature >= 40, na.rm = TRUE) * 100, 1))
+ctrl_stats <- data_4ch_canopy %>% filter(plot_type == "Control") %>%
+  summarise(m = round(mean(temperature, na.rm = TRUE), 1))
+```
+
+**Key findings and how they connect to yield:**
+
+1.  **OTC raised temperature by \~16C** (OTC `r otc_stats$m`C vs Control `r ctrl_stats$m`C), confirming the thermal stress that caused the 155g yield reduction.
+
+2.  **Only `r otc_stats$p40`% of time reached 40C**, but most OTC time exceeded 35C. This supports a threshold damage model explaining why treatment frequency (1-4 pulses) had no yield effect.
+
+3.  **Fruit temperature exceeded canopy temperature** by \~1C in OTC, suggesting canopy sensors underestimate actual fruit heat exposure.
+
+4.  **OTC reduced relative humidity**, creating a combined high-heat, low-humidity environment that helps explain the 3.8x increase in rotten fruit odds.
+
+5.  **Missing HOBO data** for tests D1 (0918) and A4 (0924); all 4-Channel files are complete.
