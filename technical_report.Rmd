@@ -17,16 +17,22 @@ header-includes:
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(
-  echo = TRUE, message = FALSE, warning = FALSE,
-  fig.width = 7, fig.height = 4.5, fig.pos = "H",
-  out.width = "85%", fig.align = "center"
+  echo = FALSE, message = FALSE, warning = FALSE,
+  fig.width = 8, fig.height = 5, fig.pos = "H",
+  out.width = "90%", fig.align = "center"
 )
 library(tidyverse)
 library(readxl)
 library(lubridate)
 library(knitr)
+library(kableExtra)
 library(coin)
 library(janitor)
+library(lme4)
+library(lmerTest)
+library(broom)
+library(broom.mixed)
+library(car, exclude = "recode")
 ```
 
 # Summary
@@ -153,9 +159,10 @@ ggplot(lt, aes(x = heat_treatment, y = healthy_weight, fill = heat_treatment)) +
   geom_boxplot(alpha = 0.7) +
   geom_jitter(width = 0.1, size = 2) +
   facet_wrap(~ cultivar) +
-  scale_fill_manual(values = c("Control" = "#0072B2", "OTC" = "#D55E00")) +
+  scale_fill_manual(values = c("Control" = "#0072B2", "OTC" = "#D55E00"),
+                    name = "Heat Treatment") +
   labs(x = "Heat Treatment", y = "Healthy Fruit Weight (g)") +
-  theme_minimal() + theme(legend.position = "none")
+  theme_minimal(base_size = 14) + theme(legend.position = "none")
 ```
 
 We used a blocking ANOVA with set pair as a fixed blocking factor to account
@@ -173,8 +180,18 @@ lt_coefs <- broom::tidy(m_lt) %>%
   filter(!str_detect(term, "set_pair")) %>%
   mutate(across(where(is.numeric), ~ round(., 3)))
 
-kable(lt_coefs, caption = "Table 1: Long-term yield model coefficients (blocking ANOVA).",
-      col.names = c("Term", "Estimate", "Std. Error", "t", "p-value"))
+lt_coefs %>%
+  mutate(term = recode(term,
+    "(Intercept)" = "Intercept",
+    "heat_treatmentOTC" = "OTC Heat Treatment",
+    "cultivarSt" = "Cultivar (Stevens)",
+    "heat_treatmentOTC:cultivarSt" = "OTC x Stevens")) %>%
+  as.data.frame() %>%
+  kbl(caption = "Table 1: Long-term yield model coefficients (blocking ANOVA).",
+      col.names = c("Term", "Estimate", "Std. Error", "t", "p-value"),
+      booktabs = TRUE) %>%
+  kable_classic(full_width = FALSE) %>%
+  row_spec(0, bold = TRUE)
 ```
 
 ```{r lt-perm}
@@ -233,7 +250,7 @@ ggplot(acute, aes(x = treatment, y = healthy_weight, fill = plot_type)) +
   scale_color_manual(values = c("Control" = "#0072B2", "OTC" = "#D55E00")) +
   labs(x = "Treatment (A = 4, B = 3, C = 2, D = 1 pulse)",
        y = "Healthy Fruit Weight (g)", fill = "Plot Type", color = "Plot Type") +
-  theme_minimal() + theme(legend.position = "bottom")
+  theme_minimal(base_size = 14) + theme(legend.position = "bottom")
 ```
 
 We fitted a linear model for healthy fruit weight. An F-test confirmed that
@@ -243,10 +260,20 @@ the additive model.
 ```{r acute-hw-model}
 m_hw <- lm(healthy_weight ~ treatment + cultivar + plot_type, data = acute)
 hw_coefs <- broom::tidy(m_hw) %>%
-  mutate(across(where(is.numeric), ~ round(., 3)))
+  mutate(term = recode(term,
+    "(Intercept)" = "Intercept",
+    "treatmentB" = "Treatment B", "treatmentC" = "Treatment C",
+    "treatmentD" = "Treatment D",
+    "cultivarSt" = "Cultivar (Stevens)",
+    "plot_typeOTC" = "OTC Heat Treatment"),
+    across(where(is.numeric), ~ round(., 3)))
 
-kable(hw_coefs, caption = "Table 2: Acute healthy weight model coefficients.",
-      col.names = c("Term", "Estimate", "Std. Error", "t", "p-value"))
+hw_coefs %>% as.data.frame() %>%
+  kbl(caption = "Table 2: Acute healthy weight model coefficients.",
+      col.names = c("Term", "Estimate", "Std. Error", "t", "p-value"),
+      booktabs = TRUE) %>%
+  kable_classic(full_width = FALSE) %>%
+  row_spec(0, bold = TRUE)
 ```
 
 Table 2 shows that OTC heating reduced healthy fruit weight by an estimated
@@ -274,7 +301,7 @@ ggplot(acute, aes(x = treatment, y = pct_rotten_wt, fill = plot_type)) +
   scale_color_manual(values = c("Control" = "#0072B2", "OTC" = "#D55E00")) +
   labs(x = "Treatment (A = 4, B = 3, C = 2, D = 1 pulse)",
        y = "Rotten Fruit (% by Weight)", fill = "Plot Type", color = "Plot Type") +
-  theme_minimal() + theme(legend.position = "bottom")
+  theme_minimal(base_size = 14) + theme(legend.position = "bottom")
 ```
 
 ```{r acute-glm}
@@ -282,11 +309,21 @@ m_rot <- glm(cbind(rotten_count, healthy_count) ~ treatment + cultivar + plot_ty
              family = quasibinomial, data = acute)
 rot_coefs <- broom::tidy(m_rot) %>%
   mutate(odds_ratio = round(exp(estimate), 3),
+         term = recode(term,
+           "(Intercept)" = "Intercept",
+           "treatmentB" = "Treatment B", "treatmentC" = "Treatment C",
+           "treatmentD" = "Treatment D",
+           "cultivarSt" = "Cultivar (Stevens)",
+           "plot_typeOTC" = "OTC Heat Treatment"),
          across(where(is.numeric), ~ round(., 3)))
 
-kable(rot_coefs %>% select(term, estimate, std.error, p.value, odds_ratio),
-      caption = "Table 3: Quasibinomial GLM for rotten fruit rate. Odds ratios greater than 1 indicate higher probability of rot.",
-      col.names = c("Term", "Log-odds", "Std. Error", "p-value", "Odds Ratio"))
+rot_coefs %>% select(term, estimate, std.error, p.value, odds_ratio) %>%
+  as.data.frame() %>%
+  kbl(caption = "Table 3: Quasibinomial GLM for rotten fruit rate.",
+      col.names = c("Term", "Log-odds", "Std. Error", "p-value", "Odds Ratio"),
+      booktabs = TRUE) %>%
+  kable_classic(full_width = FALSE) %>%
+  row_spec(0, bold = TRUE)
 ```
 
 The quasibinomial GLM (Table 3) shows that OTC heating increases the odds of
@@ -403,30 +440,53 @@ acute_gallic <- d_conc %>%
   )
 ```
 
-```{r fig-gallic-acute, fig.cap="Figure 5: Gallic acid concentration in the acute experiment by treatment and cultivar. Mullica Queen shows higher concentrations than Stevens. No clear heat treatment effect is visible."}
+```{r fig-gallic-acute, fig.cap="Figure 5: Gallic acid concentration in the acute experiment. Mullica Queen shows higher concentrations than Stevens across both treatment and control plots."}
 acute_gallic %>%
-  ggplot(aes(x = treatment, y = conc_mean, fill = plot_type)) +
-  geom_boxplot() +
-  facet_wrap(~ cultivar) +
-  scale_fill_manual(values = c("Control" = "#0072B2", "OTC" = "#D55E00")) +
-  labs(x = "Heat Treatment", y = "Mean Gallic Acid Concentration",
-       fill = "Plot Type") +
-  theme_minimal() + theme(legend.position = "bottom")
+  ggplot(aes(x = treatment, y = conc_mean, fill = cultivar)) +
+  geom_boxplot(alpha = 0.7) +
+  geom_jitter(aes(color = cultivar),
+              position = position_jitterdodge(jitter.width = 0.1), size = 1.5) +
+  facet_wrap(~ plot_type) +
+  labs(x = "Heat Treatment", y = "Gallic Acid Concentration",
+       fill = "Cultivar", color = "Cultivar") +
+  theme_minimal(base_size = 14) + theme(legend.position = "bottom")
 ```
 
 Figure 5 shows that gallic acid concentration varies primarily by cultivar,
 with Mullica Queen consistently higher than Stevens. No clear pattern
 emerges between OTC and control plots.
 
-```{r gallic-acute-model}
-m_gallic_acute <- lm(conc_mean ~ treatment + cultivar + plot_type,
-                     data = acute_gallic)
-ga_coefs <- broom::tidy(m_gallic_acute) %>%
-  mutate(across(where(is.numeric), ~ round(., 3)))
+We used a linear mixed-effects model with biological replicate pairing as a
+random effect to account for the paired design structure.
 
-kable(ga_coefs,
-      caption = "Table 4: Acute gallic acid model (additive). Cultivar is the dominant factor.",
-      col.names = c("Term", "Estimate", "Std. Error", "t", "p-value"))
+```{r gallic-acute-model}
+# Create set key for random effect
+acute_gallic <- acute_gallic %>%
+  mutate(bio_rep = str_extract(acute_code, "\\d+$"),
+         set_key = paste(cultivar, bio_rep, treatment, sep = "_")) %>%
+  group_by(set_key) %>%
+  mutate(set_id = cur_group_id()) %>%
+  ungroup()
+
+m_gallic_acute <- lmer(conc_mean ~ treatment + cultivar + plot_type +
+                         (1 | set_id), data = acute_gallic)
+
+ga_coefs <- broom.mixed::tidy(m_gallic_acute, effects = "fixed") %>%
+  select(-effect) %>%
+  mutate(term = recode(term,
+    "(Intercept)" = "Intercept",
+    "treatmentB" = "Treatment B", "treatmentC" = "Treatment C",
+    "treatmentD" = "Treatment D",
+    "cultivarSt" = "Cultivar (Stevens)",
+    "plot_typeOTC" = "OTC Heat Treatment"),
+    across(where(is.numeric), ~ round(., 3)))
+
+ga_coefs %>% as.data.frame() %>%
+  kbl(caption = "Table 4: Acute gallic acid mixed model. Cultivar is the dominant factor.",
+      col.names = c("Term", "Estimate", "Std. Error", "df", "t", "p-value"),
+      booktabs = TRUE) %>%
+  kable_classic(full_width = FALSE) %>%
+  row_spec(0, bold = TRUE)
 ```
 
 Table 4 confirms that the cultivar effect is statistically discernible:
@@ -449,14 +509,22 @@ lt_gallic <- d_conc %>%
   left_join(lt_map, by = "plot_num") %>%
   mutate(set_pair = factor(set_pair))
 
-m_gallic_lt <- lm(conc_mean ~ heat_trt + cultivar + set_pair, data = lt_gallic)
-gl_coefs <- broom::tidy(m_gallic_lt) %>%
-  filter(!str_detect(term, "set_pair")) %>%
-  mutate(across(where(is.numeric), ~ round(., 3)))
+m_gallic_lt <- lmer(conc_mean ~ heat_trt + cultivar + (1 | set_pair),
+                    data = lt_gallic)
+gl_coefs <- broom.mixed::tidy(m_gallic_lt, effects = "fixed") %>%
+  select(-effect) %>%
+  mutate(term = recode(term,
+    "(Intercept)" = "Intercept",
+    "heat_trtOTC" = "OTC Heat Treatment",
+    "cultivarSt" = "Cultivar (Stevens)"),
+    across(where(is.numeric), ~ round(., 3)))
 
-kable(gl_coefs,
-      caption = "Table 5: Long-term gallic acid model. Cultivar is significant; OTC is not.",
-      col.names = c("Term", "Estimate", "Std. Error", "t", "p-value"))
+gl_coefs %>% as.data.frame() %>%
+  kbl(caption = "Table 5: Long-term gallic acid mixed model. Cultivar is discernible; OTC is not.",
+      col.names = c("Term", "Estimate", "Std. Error", "df", "t", "p-value"),
+      booktabs = TRUE) %>%
+  kable_classic(full_width = FALSE) %>%
+  row_spec(0, bold = TRUE)
 ```
 
 Consistent with the acute analysis, the long-term model (Table 5) shows a
@@ -498,7 +566,7 @@ data_canopy %>%
   scale_color_manual(values = c("OTC" = "#D55E00", "Control" = "#0072B2")) +
   labs(x = "Time", y = "Canopy Temperature (degrees Celsius)",
        color = "Plot Type") +
-  theme_minimal(base_size = 9) + theme(legend.position = "bottom")
+  theme_minimal(base_size = 14) + theme(legend.position = "bottom")
 ```
 
 Figure 6 shows that OTC plots (orange) are consistently elevated above
@@ -519,8 +587,13 @@ threshold_tbl <- data_canopy %>%
     .groups = "drop"
   )
 
-kable(threshold_tbl,
-      caption = "Table 6: OTC temperature thresholds by treatment. All treatments exceed 35 degrees most of the time, despite varying success at reaching 40 degrees.")
+threshold_tbl %>%
+  rename(Treatment = treatment) %>%
+  as.data.frame() %>%
+  kbl(caption = "Table 6: OTC temperature thresholds by treatment.",
+      booktabs = TRUE) %>%
+  kable_classic(full_width = FALSE) %>%
+  row_spec(0, bold = TRUE)
 ```
 
 Table 6 shows that while only 38% of OTC time reached the 40-degree target,
@@ -549,8 +622,12 @@ corr_tbl <- temp_wide %>%
     .groups = "drop"
   )
 
-kable(corr_tbl,
-      caption = "Table 7: Canopy versus fruit temperature. Fruit temperatures are slightly higher than canopy temperatures, especially in OTC plots.")
+corr_tbl %>%
+  as.data.frame() %>%
+  kbl(caption = "Table 7: Canopy versus fruit temperature.",
+      booktabs = TRUE) %>%
+  kable_classic(full_width = FALSE) %>%
+  row_spec(0, bold = TRUE)
 ```
 
 Table 7 shows that fruit temperatures average about 1 degree higher than
@@ -567,10 +644,10 @@ data_hobo %>%
   ggplot(aes(x = treatment, y = rh, fill = plot_type)) +
   geom_boxplot(alpha = 0.7) +
   facet_wrap(~ cultivar) +
-  scale_fill_manual(values = c("Control" = "#0072B2", "OTC" = "#D55E00")) +
-  labs(x = "Treatment", y = "Relative Humidity (%)",
-       fill = "Plot Type") +
-  theme_minimal() + theme(legend.position = "bottom")
+  scale_fill_manual(values = c("Control" = "#0072B2", "OTC" = "#D55E00"),
+                    name = "Plot Type") +
+  labs(x = "Treatment", y = "Relative Humidity (%)") +
+  theme_minimal(base_size = 14) + theme(legend.position = "bottom")
 ```
 
 Figure 7 shows that OTC plots have substantially lower relative humidity
